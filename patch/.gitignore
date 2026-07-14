@@ -1,0 +1,4 @@
+log/
+v2.2_jetson_air021a1/demo/*
+!v2.2_jetson_air021a1/demo/boot_air021_20260520_serial_gif_acc_compressed.gif
+!v2.2_jetson_air021a1/demo/boot_air021_20260520_video_gif_acc_compressed.gif

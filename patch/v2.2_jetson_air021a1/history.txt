@@ -1,0 +1,47 @@
+Version: 2.2_patch_jetson_air021a1
+    Installer    : patch_jetson_air021a1.sh
+    Release Date : 2026/05/21
+    Description  : 
+	a. Applying automation script/patch for AIR-021 (JP6.2 / L4T 36.4.3) can boot from PXEv4.
+
+Version: 2.2
+    Installer    : pxe_installer.sh
+    Release Date : 2026/05/21
+    Description  : 
+	a. Refactor: Folder logic for case-insensitive
+	b. Refactor: Re-name "undionly.kpxe" and "ipxe.efi" for corresponding platform
+	c. Support aarch64 booting to PXE menu
+	d. Update pxe-system-type for x86_64 and aarch64
+	e. Fixs some bugs
+
+Version: 2.1
+    Installer    : pxe_installer.sh
+    Release Date : 2026/05/06
+    Description  : 
+	a. The iPXE version has been set to 1.21.1 using local source code, as version 2.0 does not support keyboard and mouse functionality.
+	b. Set version as global variable
+	c. Remove debug mode for misunderstanding
+	d. Fixs some syntax bugs
+	e. Add 'set_color()' function
+
+Version: 2.0
+    Installer    : pxe_installer.sh
+    Release Date : 2026/05/05
+    Description  : 
+        a. Refactor as functional setup script and add config.env
+        b. Support both IPv4 and IPv6
+        c. Only support x86 platform, Ubuntu Desktop version
+	d. Setup DHCP by virtual LAN bridge
+
+Version: 1.1
+    Installer    : pxe-setup_v1.1.sh
+    Release Date : NA
+    Description  : 
+        a. add pxe-dhcp-on-link.service
+        b. change $USER to ${SUDO_USER:-$USER}, avoiding EUID issue (root not eq user)
+
+Version: 1.0
+    Installer    : pxe-setup-1.0.sh
+    Release Date : NA
+    Description  : 
+        a. Initial setup script.

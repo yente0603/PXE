@@ -1,0 +1,20 @@
+--- a/etc/dhcp/dhcpd.conf
++++ b/etc/dhcp/dhcpd.conf
+@@ -29,4 +29,9 @@
+     } else {
+         filename "ipxe/undionly-legacy.kpxe";       # Legacy BIOS
+     }
++
++    class "pxeclients" {
++        match if substring (option vendor-class-identifier, 0, 9) = "PXEClient";
++                filename="efi/grubnetaa64.efi.signed";
++    }
+ }
+--- a/etc/default/tftpd-hpa
++++ b/etc/default/tftpd-hpa
+@@ -1,4 +1,4 @@
+ TFTP_USERNAME="tftp"
+-TFTP_DIRECTORY="/pxe/tftp"
++TFTP_DIRECTORY="/pxe/tftp/jetson"
+ TFTP_ADDRESS="[::]:69"
+ TFTP_OPTIONS="--secure --verbose"
