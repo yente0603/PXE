@@ -1,0 +1,21 @@
+Version: 2.0
+    Installer    : pxe_installer.sh
+    Release Date : 2026/05/05
+    Description  : 
+        a. Refactor as functional setup script and add config.env
+        b. Support both IPv4 and IPv6
+        c. Only support x86 platform, Ubuntu Desktop version
+	d. Setup DHCP by virtual LAN bridge
+
+Version: 1.1
+    Installer    : pxe-setup_v1.1.sh
+    Release Date : NA
+    Description  : 
+        a. add pxe-dhcp-on-link.service
+        b. change $USER to ${SUDO_USER:-$USER}, avoiding EUID issue (root not eq user)
+
+Version: 1.0
+    Installer    : pxe-setup-1.0.sh
+    Release Date : NA
+    Description  : 
+        a. Initial setup script.

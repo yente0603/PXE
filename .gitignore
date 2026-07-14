@@ -1,0 +1,16 @@
+sandbox/
+drafts/
+release/
+_archive/
+_eiss230_server/
+_sandbox/
+assets/ghost/
+assets/winpe/tftp/winpe/
+assets/winpe/http/winpe/*
+!assets/winpe/http/winpe/startup.bat
+!assets/winpe/http/winpe/winpeshl.ini
+
+*.wim
+*.iso
+*.ISO
+*.pdf
