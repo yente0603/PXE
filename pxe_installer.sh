@@ -1,14 +1,17 @@
 #!/bin/bash
 
-# version: 2.0
+# version: v2.1
 # Author: Jasper.Lee
 # Description: 
-#   a. Refactor as functional setup script and add config.env
-#   b. Support both IPv4 and IPv6
-#   c. Only support x86 platform, Ubuntu Desktop version
-#   d. Setup DHCP by virtual LAN bridge
+#   a. The iPXE version has been set to 1.21 using local source code, as version 2.0 does not support keyboard and mouse functionality.
+#   b. Set version as global variable
+#   c. Remove debug mode for misunderstanding
+#   d. Some syntax bugs
+#   e. Add 'set_color()' function
 
 set -eo pipefail
+VERSION="v2.1"
+UPDATE_DATE="2026/05/06"
 RUN_ID=$(date '+%Y%m%d-%H%M%S')
 RUN_TS=$(date +%s)
 TEMP_LOG="/tmp/pxe_setup_${RUN_ID}.log"
@@ -23,11 +26,11 @@ log() {
     echo -e "[$timestamp] $message" | tee -a "$LOG_FILE"
 }
 error_exit() {
-    log "\e[31m[ERROR]\e[0m $1"
+    log "${RED}[ERROR]${RESET} $1"
     exit 1
 }
 warning() {
-    log "\e[33m[WARNING]\e[0m $1"
+    log "${YELLOW}[WARNING]${RESET} $1"
 }
 
 check_permission() {
@@ -38,6 +41,13 @@ check_permission() {
     if [[ -z "${SUDO_USER:-}" ]]; then
         warning "Running as root directly (not via sudo). Proceeding anyway."
     fi
+}
+
+set_color(){
+    RED='\e[31m'    # error
+    GREEN='\e[32m'  # ipxe patch
+    YELLOW='\e[33m' # warning
+    RESET='\e[0m'   # reset
 }
 
 load_config() {
@@ -83,7 +93,7 @@ load_config() {
 validate_config() {
     log "Validating configuration values..."
     local required_vars=(
-        "PXE_INTERFACE" "PXE_SERVER_IPv4" "PXE_SERVER_IPv6" "ISO_PATH" 
+        "PXE_INTERFACE" "PXE_SERVER_IPv4" "PXE_SERVER_IPv6" "PXE_BRIDGE" "ISO_PATH" 
         "HTTP_PATH" "TFTP_PATH" "LOG_PATH" "BIN_PATH"
     )
     
@@ -107,9 +117,9 @@ welcomeinfo() {
 ========================================================
 Ubuntu Desktop PXE Server Installation
 ========================================================
-Version: v2.0
+Version: $VERSION
 Author: Jasper.Lee
-Last Update: 2026/02/05
+Last Update: $UPDATE_DATE
 
 OS Version: $(lsb_release -d | cut -f2- | tr -d '\n'; echo -n " "; uname -r)
 PXE Domain Name: $PXE_DOMAIN_NAME
@@ -128,11 +138,10 @@ dependency() {
     apt install -y isc-dhcp-server tftpd-hpa tftp-hpa apache2 \
         syslinux-common syslinux-efi syslinux git gcc binutils \
         make perl liblzma-dev mtools genisoimage \
-        isolinux tree curl networkd-dispatcher\
+        isolinux tree curl networkd-dispatcher \
         libssl-dev ndisc6 radvd >> "$LOG_FILE" 2>&1
     apt remove -y ipxe > /dev/null 2>&1 || true
     apt autoremove -y > /dev/null 2>&1
-    apt update >> "$LOG_FILE" 2>&1
     log "Package installation completed."
 }
 
@@ -208,7 +217,7 @@ network:
       dhcp4: false
       dhcp6: false
 EOF
-    sed 's/^/[NETPLAN] /' /etc/netplan/02-pxe.yaml >> "$LOG_FILE"
+    sed 's/^/[NETPLAN] /' "/etc/netplan/02-pxe.yaml" >> "$LOG_FILE"
     log "Applying network configuration..."
     chmod 600 /etc/netplan/02-pxe.yaml
     nmcli connection reload || true
@@ -294,7 +303,7 @@ EOF
 INTERFACESv4="$PXE_BRIDGE"
 INTERFACESv6="$PXE_BRIDGE"
 EOF
-    sed 's/^/[isc-dhcp-server] /' /etc/default/isc-dhcp-server >> "$LOG_FILE"
+    sed 's/^/[isc-dhcp-server] /' "/etc/default/isc-dhcp-server" >> "$LOG_FILE"
     log "DHCP configuration setup $PXE_BRIDGE done."
 }
 
@@ -344,57 +353,56 @@ TFTP_DIRECTORY="$TFTP_PATH"
 TFTP_ADDRESS="[::]:69"
 TFTP_OPTIONS="--secure --verbose"
 EOF
-    sed 's/^/[TFTP] /' /etc/default/tftpd-hpa >> "$LOG_FILE"
+    sed 's/^/[TFTP] /' "/etc/default/tftpd-hpa" >> "$LOG_FILE"
     log "TFTP configuration setup done."
 }
 
 build_ipxe() {
-    log "Build iPXE from source github..."
+    log "Build iPXE from local source code (v1.21)..."
     local original_dir=$(pwd)
-    cd /tmp
-    if [[ -d "ipxe" ]]; then
-        warning "iPXE directory exists, cleaning up for a fresh build..."
-        rm -rf "ipxe"
+    # cd src/source_code/ipxe/src || error_exit "iPXE source directory not found"
+    cd src/source_code || error_exit "source_code dir not found"
+    if [ ! -d ipxe ]; then
+        tar xzvf ipxe.tgz || error_exit "Failed to extract ipxe.tgz"
     fi
-
-    git clone --depth 1 https://github.com/ipxe/ipxe.git >> "$LOG_FILE" 2>&1
-    cd ipxe/src
+    cd ipxe/src || error_exit "iPXE source directory not found"
+    
     local ipxe_config="config/general.h"
     # Check ipxe/src/config/general.h enable IPv6
     if grep -q '^[[:space:]]*//\s*#define\s*NET_PROTO_IPV6' "$ipxe_config"; then
-        log "\e[32m[iPXE PATCH]\e[0m Enabling NET_PROTO_IPV6 in $ipxe_config..."
-        if sed -i 's/^[[:space:]]*\/\/#define\s*NET_PROTO_IPV6/#define NET_PROTO_IPV6/' "$ipxe_config"; then
-            log "\e[32m[iPXE PATCH]\e[0m NET_PROTO_IPV6 enabled successfully"
+        log "${GREEN}[iPXE PATCH]${RESET} Enabling NET_PROTO_IPV6 in $ipxe_config..."
+        if sed -i 's|^[[:space:]]*//[[:space:]]*#define[[:space:]]\+NET_PROTO_IPV6|#define NET_PROTO_IPV6|' "$ipxe_config"; then
+            log "${GREEN}[iPXE PATCH]${RESET} NET_PROTO_IPV6 enabled successfully"
         else
-            warning "\e[32m[iPXE PATCH]\e[0m Failed to enable NET_PROTO_IPV6"
+            warning "${GREEN}[iPXE PATCH]${RESET} Failed to enable NET_PROTO_IPV6"
         fi
     else
-        log "\e[32m[iPXE PATCH]\e[0m NET_PROTO_IPV6 is already enabled or not found."
+        log "${GREEN}[iPXE PATCH]${RESET} NET_PROTO_IPV6 is already enabled or not found."
     fi
 
     # Check ipxe/src/config/general.h enable PING command
     if grep -q '^[[:space:]]*//\s*#define\s*PING_CMD' "$ipxe_config"; then
-        log "\e[32m[iPXE PATCH]\e[0m Enabling PING_CMD in $ipxe_config..."
+        log "${GREEN}[iPXE PATCH]${RESET} Enabling PING_CMD in $ipxe_config..."
         if sed -i 's/^[[:space:]]*\/\/#define\s*PING_CMD/#define PING_CMD/' "$ipxe_config"; then
-            log "\e[32m[iPXE PATCH]\e[0m PING_CMD enabled successfully"
+            log "${GREEN}[iPXE PATCH]${RESET} PING_CMD enabled successfully"
         else
-            warning "\e[32m[iPXE PATCH]\e[0m Failed to enable PING_CMD"
+            warning "${GREEN}[iPXE PATCH]${RESET} Failed to enable PING_CMD"
         fi
     else
-        log "\e[32m[iPXE PATCH]\e[0m PING_CMD is already enabled or not found."
+        log "${GREEN}[iPXE PATCH]${RESET} PING_CMD is already enabled or not found."
     fi
 
     # Disable autoexec function in script
     ipxe_config="interface/efi/efiprefix.c"
     if grep -q '^[[:space:]]*efi_autoexec_load()' "$ipxe_config"; then
-        log "\e[32m[iPXE PATCH]\e[0m Disabling efi_autoexec_load() in $ipxe_config..."
+        log "${GREEN}[iPXE PATCH]${RESET} Disabling efi_autoexec_load() in $ipxe_config..."
         if sed -i 's/^[[:space:]]*efi_autoexec_load()/\/\/ &/' "$ipxe_config"; then
-            log "\e[32m[iPXE PATCH]\e[0m efi_autoexec_load() disabled successfully"
+            log "${GREEN}[iPXE PATCH]${RESET} efi_autoexec_load() disabled successfully"
         else
-            warning "\e[32m[iPXE PATCH]\e[0m Failed to disable efi_autoexec_load()"
+            warning "${GREEN}[iPXE PATCH]${RESET} Failed to disable efi_autoexec_load()"
         fi
     else
-        log "\e[32m[iPXE PATCH]\e[0m efi_autoexec_load() is already disabled or not found."
+        log "${GREEN}[iPXE PATCH]${RESET} efi_autoexec_load() is already disabled or not found."
     fi
 
     make distclean >> "$LOG_FILE" 2>&1 || true
@@ -546,14 +554,14 @@ choose selected && goto \${selected}
 echo Loading Ubuntu 24.04.3...
 kernel http://\${pxeip}/ubuntu-24.04.3-desktop-amd64/casper/vmlinuz
 initrd http://\${pxeip}/ubuntu-24.04.3-desktop-amd64/casper/initrd
-imgargs vmlinuz boot=casper netboot=url url=http://\${pxeip}/ISO/ubuntu-24.04.3-desktop-amd64.iso ip=dhcp toram debug nomodeset --
+imgargs vmlinuz boot=casper netboot=url url=http://\${pxeip}/iso/ubuntu-24.04.3-desktop-amd64.iso ip=dhcp toram debug nomodeset --
 boot
 
 :ubuntu-22.04.5
 echo Loading Ubuntu 22.04.5...
 kernel http://\${pxeip}/ubuntu-22.04.5-desktop-amd64/casper/vmlinuz
 initrd http://\${pxeip}/ubuntu-22.04.5-desktop-amd64/casper/initrd
-imgargs vmlinuz boot=casper url=http://\${pxeip}/ISO/ubuntu-22.04.5-desktop-amd64.iso ip=dhcp toram debug nomodeset --
+imgargs vmlinuz boot=casper url=http://\${pxeip}/iso/ubuntu-22.04.5-desktop-amd64.iso ip=dhcp toram debug nomodeset --
 boot
 
 :WinPE
@@ -634,7 +642,7 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod +x /etc/systemd/system/pxe-tftp-on-link.service
+    # chmod +x /etc/systemd/system/pxe-tftp-on-link.service
     sed 's/^/[pxe-tftp-on-link.service] /' /etc/systemd/system/pxe-tftp-on-link.service >> "$LOG_FILE"
 
     tee /etc/networkd-dispatcher/routable.d/start-dhcp-on-link > /dev/null << EOF
@@ -687,7 +695,7 @@ final_status() {
 PXE Server Setup Complete! 
 ========================================================
 EOF
-    log "Build PXE Script Version: v2.0"
+    log "Build PXE Script Version: $VERSION"
     log "OS Version: $(lsb_release -d | cut -f2- | tr -d '\n'; echo -n " "; uname -r)"
 
     log "Service status:"
@@ -788,7 +796,7 @@ uninstall() {
         rm -rf $BIN_PATH/* 2>&1 | tee -a "$LOG_FILE" || warning "Failed to remove $BIN_PATH"
     fi
     log "Remove PXE server done!"
-    read -p "Do you want to reboot now? Y/[N]: " -n 1 -r
+    read -r -p "Do you want to reboot now? Y/[N]: " -n 1 REPLY
     echo
     REPLY="${REPLY:-N}"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -802,18 +810,17 @@ uninstall() {
 
 usage() {
     cat >&2 <<EOF
-PXE Server Setup Script (v2.0)
+PXE Server Setup Script ($VERSION)
 
 Usage: sudo $0 [OPTIONS]
 
 Options:
-  (NULL)            Install PXE v2.0
+  (NULL)            Install PXE $VERSION
   -h, --help        Show this help message and exit
   -r, --remove, --uninstall
                     Uninstall PXE server and remove all configurations
   -m, --mount       Only mount ISO files (call pxe-mount-iso.sh)
   -u, --umount      Only unmount ISO files (call pxe-umount-iso.sh)
-  -d, --debug       Enable debug mode (verbose logging to console)
   --no-ipxe-build   Skip iPXE build (use existing binaries)
 
 Examples:
@@ -824,12 +831,13 @@ EOF
 }
 
 main() {
+    set_color
     check_permission
     if [[ "$1" == "-h" || "$1" == "--help" ]]; then
         usage
         exit 0
     fi
-
+    
     load_config
     validate_config 
     SKIP_IPXE_BUILD=false
@@ -864,16 +872,13 @@ main() {
                 SKIP_IPXE_BUILD=true
                 shift
                 ;;
-            -d|--debug)
-                set -x
-                shift
-                ;;
             *)
                 warning "\"${1}\" is an invalid input parameter!"
                 usage
                 exit 1
                 ;;
         esac
+        shift
     done
     echo "Do you want to install PXE server?"
     echo "   [Y] Yes (Default) [N] No "
