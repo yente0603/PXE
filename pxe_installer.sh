@@ -1,29 +1,33 @@
 #!/bin/bash
 
-# version: v2.1
+# version: v2.2
 # Author: Jasper.Lee
 # Description: 
-#   a. The iPXE version has been set to 1.21 using local source code, as version 2.0 does not support keyboard and mouse functionality.
-#   b. Set version as global variable
-#   c. Remove debug mode for misunderstanding
-#   d. Some syntax bugs
-#   e. Add 'set_color()' function
+#   a. Refactor: Folder logic for case-insensitive
+#   b. Refactor: Re-name "undionly.kpxe" and "ipxe.efi" for corresponding platform
+#   c. Support aarch64 booting to PXE menu
+#   d. Update pxe-system-type for x86_64 and aarch64
 
 set -eo pipefail
-VERSION="v2.1"
-UPDATE_DATE="2026/05/06"
+VERSION="v2.2"
+UPDATE_DATE="2026/05/19"
 RUN_ID=$(date '+%Y%m%d-%H%M%S')
 RUN_TS=$(date +%s)
 TEMP_LOG="/tmp/pxe_setup_${RUN_ID}.log"
 LOG_FILE="$TEMP_LOG"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.env"
+IPXE_VERSION="v1.21.1_20260121_g0abef79a2"
 
 # ----- Utility -----
 log() {
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "[$timestamp] $message" | tee -a "$LOG_FILE"
+    # echo -e "[$timestamp] $message" | tee -a "$LOG_FILE"
+    # stdout
+    echo -e "[$timestamp] $message"
+    # log file
+    echo -e "[$timestamp] $message" | sed 's/\x1b\[[0-9;]*m//g' >> "$LOG_FILE"
 }
 error_exit() {
     log "${RED}[ERROR]${RESET} $1"
@@ -92,6 +96,7 @@ load_config() {
 
 validate_config() {
     log "Validating configuration values..."
+
     local required_vars=(
         "PXE_INTERFACE" "PXE_SERVER_IPv4" "PXE_SERVER_IPv6" "PXE_BRIDGE" "ISO_PATH" 
         "HTTP_PATH" "TFTP_PATH" "LOG_PATH" "BIN_PATH"
@@ -100,6 +105,11 @@ validate_config() {
     for var in "${required_vars[@]}"; do
         if [[ -z "${!var:-}" ]]; then
             error_exit "Critical configuration missing: $var. Please check your $CONFIG_FILE."
+        fi
+    done
+    for var in HTTP_PATH TFTP_PATH LOG_PATH BIN_PATH; do
+        if [[ "${!var}" != /pxe/* ]]; then
+            warning "$var is not under /pxe. The script may not work correctly."
         fi
     done
     if [[ ! -d "/sys/class/net/$PXE_INTERFACE" ]]; then
@@ -139,8 +149,10 @@ dependency() {
         syslinux-common syslinux-efi syslinux git gcc binutils \
         make perl liblzma-dev mtools genisoimage \
         isolinux tree curl networkd-dispatcher \
-        libssl-dev ndisc6 radvd >> "$LOG_FILE" 2>&1
-    apt remove -y ipxe > /dev/null 2>&1 || true
+        libssl-dev ndisc6 radvd \
+        gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+        nfs-kernel-server >> "$LOG_FILE" 2>&1    
+    apt remove -y ipxe >> "$LOG_FILE" 2>&1 || true
     apt autoremove -y > /dev/null 2>&1
     log "Package installation completed."
 }
@@ -254,7 +266,7 @@ authoritative;
 subnet $PXE_SUBNET_IPv4 netmask $PXE_NETMASK_IPv4 {
     range $PXE_DHCP_RANGE_START_IPv4 $PXE_DHCP_RANGE_END_IPv4;
     option routers $PXE_SERVER_IPv4;
-    option broadcast-address ${PXE_SUBNET_IPv4%.*}.255;
+    # option broadcast-address ${PXE_SUBNET_IPv4%.*}.255; # dhcpd will automatically calculate based on netmask.
     
     # IPv4 Boot
     next-server $PXE_SERVER_IPv4;
@@ -263,20 +275,20 @@ subnet $PXE_SUBNET_IPv4 netmask $PXE_NETMASK_IPv4 {
         filename "http://$PXE_SERVER_IPv4/ipxe/boot.ipxe";
     } elsif substring(option vendor-class-identifier, 0, 9) = "PXEClient" {
         if option pxe-system-type = 00:07 {
-            filename "ipxe/ipxe.efi";
+            filename "ipxe/ipxe-x86.efi";           # EFI Byte Code (64-bit UEFI)
         } elsif option pxe-system-type = 00:09 {
-            filename "ipxe/ipxe.efi";
+            filename "ipxe/ipxe-x86.efi";           # EFI x86_64 (64-bit UEFI)
         } elsif option pxe-system-type = 00:0B {
-            filename "ipxe/ipxe.efi";
+            filename "ipxe/snp-arm64.efi";          # ARM 64-bit UEFI
         } else {
-            filename "ipxe/undionly.kpxe";
+            filename "ipxe/undionly-legacy.kpxe";   # Legacy BIOS
         }
     } else {
-        filename "ipxe/undionly.kpxe";
+        filename "ipxe/undionly-legacy.kpxe";       # Legacy BIOS
     }
 }
 EOF
-    sed 's/^/[DHCP] /' /etc/dhcp/dhcpd.conf > /dev/null >> "$LOG_FILE"
+    sed 's/^/[DHCP] /' /etc/dhcp/dhcpd.conf >> "$LOG_FILE"
 
     tee /etc/dhcp/dhcpd6.conf > /dev/null << EOF
 # DHCPv6 Configuration
@@ -292,8 +304,12 @@ subnet6 $PXE_SUBNET_IPv6/$PXE_PREFIX_IPv6 {
     # PXE Boot over IPv6 (RFC 5970)
     if exists user-class and option user-class = "iPXE" {
         option dhcp6.bootfile-url "http://[$PXE_SERVER_IPv6]/ipxe/boot.ipxe";
+    } elsif option dhcp6.client-arch-type = 00:09 {
+        option dhcp6.bootfile-url "tftp://[$PXE_SERVER_IPv6]/ipxe/ipxe-x86.efi";
+    } elsif option dhcp6.client-arch-type = 00:0B {
+        option dhcp6.bootfile-url "tftp://[$PXE_SERVER_IPv6]/ipxe/snp-arm64.efi";
     } else {
-        option dhcp6.bootfile-url "tftp://[$PXE_SERVER_IPv6]/ipxe/ipxe.efi";
+        option dhcp6.bootfile-url "tftp://[$PXE_SERVER_IPv6]/ipxe/undionly-legacy.kpxe";
     }
 }
 EOF
@@ -358,14 +374,14 @@ EOF
 }
 
 build_ipxe() {
-    log "Build iPXE from local source code (v1.21)..."
+    log "Build iPXE from local source code (v1.21.1)..."
     local original_dir=$(pwd)
-    # cd src/source_code/ipxe/src || error_exit "iPXE source directory not found"
-    cd src/source_code || error_exit "source_code dir not found"
-    if [ ! -d ipxe ]; then
-        tar xzvf ipxe.tgz || error_exit "Failed to extract ipxe.tgz"
+    cd third_party/ || error_exit "third_party dir not found"
+    # git clone -b v1.21.1 --depth 1 https://github.com/ipxe/ipxe.git ipxe-v1.21.1
+    if [ ! -d ipxe_${IPXE_VERSION} ]; then
+        tar xzf ipxe_${IPXE_VERSION}.tgz || error_exit "Failed to extract ipxe_${IPXE_VERSION}.tgz"
     fi
-    cd ipxe/src || error_exit "iPXE source directory not found"
+    cd ipxe_${IPXE_VERSION}/src || error_exit "iPXE source directory not found"
     
     local ipxe_config="config/general.h"
     # Check ipxe/src/config/general.h enable IPv6
@@ -418,8 +434,27 @@ build_ipxe() {
     fi
    
     mkdir -p /usr/local/lib/ipxe
-    cp bin/undionly.kpxe /usr/local/lib/ipxe 2>&1 | tee -a "$LOG_FILE"
-    cp bin-x86_64-efi/ipxe.efi /usr/local/lib/ipxe 2>&1 | tee -a "$LOG_FILE"
+    cp bin/undionly.kpxe /usr/local/lib/ipxe/undionly-legacy.kpxe 2>&1 | tee -a "$LOG_FILE" # Re-name for corresponding platform in v2.2
+    cp bin-x86_64-efi/ipxe.efi /usr/local/lib/ipxe/ipxe-x86.efi  2>&1 | tee -a "$LOG_FILE" # Re-name for corresponding platform in v2.2
+
+    # ==================== ADD: aarch64 function ====================
+    # log "Build iPXE ARM64 UEFI version ..."
+    # if ! make bin-arm64-efi/ipxe.efi -j$(nproc) \
+    #     CROSS_COMPILE=aarch64-linux-gnu- >> "$LOG_FILE" 2>&1; then
+    #     warning "Failed to build iPXE ARM64 UEFI version!"
+    # fi
+    # cp bin-arm64-efi/ipxe.efi /usr/local/lib/ipxe/ipxe-arm64.efi 2>&1 | tee -a "$LOG_FILE"
+
+    # Use snp.efi for ARM64 UEFI clients (e.g. Jetson)
+    # snp.efi leverages UEFI Simple Network Protocol,
+    # which is more compatible than ipxe.efi on ARM platforms.
+    log "Build iPXE ARM64 UEFI version ..."
+    if ! make bin-arm64-efi/snp.efi -j$(nproc) \
+        CROSS_COMPILE=aarch64-linux-gnu- >> "$LOG_FILE" 2>&1; then
+        warning "Failed to build iPXE ARM64 UEFI version!"
+    fi
+    cp bin-arm64-efi/snp.efi /usr/local/lib/ipxe/snp-arm64.efi 2>&1 | tee -a "$LOG_FILE"
+    # ===============================================================
 
     cd "$original_dir"
     log "iPXE build completed."
@@ -430,39 +465,44 @@ setup_pxe_files() {
     
     # configuration
     cp "$CONFIG_FILE" /pxe/config.env 2>&1 | tee -a "$LOG_FILE"
-    # iPXE binary files
-    cp /usr/local/lib/ipxe/undionly.kpxe "$TFTP_PATH/ipxe/" 2>&1 | tee -a "$LOG_FILE"
-    cp /usr/local/lib/ipxe/ipxe.efi "$TFTP_PATH/ipxe" 2>&1 | tee -a "$LOG_FILE"
+    # iPXE binary files (x86)
+    cp /usr/local/lib/ipxe/undionly-legacy.kpxe "$TFTP_PATH/ipxe/" 2>&1 | tee -a "$LOG_FILE"
+    cp /usr/local/lib/ipxe/ipxe-x86.efi "$TFTP_PATH/ipxe" 2>&1 | tee -a "$LOG_FILE"
     # SYSLUNUX modules
     cp /usr/lib/syslinux/modules/bios/*.c32 "$TFTP_PATH/BIOS" 2>&1 | tee -a "$LOG_FILE"
     cp /usr/lib/SYSLINUX.EFI/efi64/syslinux.efi "$TFTP_PATH/EFI" 2>&1 | tee -a "$LOG_FILE"
     # EFI shell files
-    if [[ -f src/include/EFI/BOOT/Shellx64.efi ]]; then
-        cp -r src/include/EFI/BOOT/ $TFTP_PATH/EFI/ 2>&1 | tee -a "$LOG_FILE"
+    if [[ -f assets/efi/BOOT/Shellx64.efi ]]; then
+        cp -r assets/efi/BOOT/ $TFTP_PATH/EFI/ 2>&1 | tee -a "$LOG_FILE"
         log "EFI Shell setup done."
     else
         warning "EFI shell files not found! Will not install EFI Shell in PXE system"
         warning "Manually install: sudo cp /path/to/you/efi/ $TFTP_PATH/EFI"
     fi
     # WinPE files
-    if [[ -f src/include/WinPE/tftp/WinPE/wimboot ]]; then
-        cp -r src/include/WinPE/tftp/WinPE $TFTP_PATH/ 2>&1 | tee -a "$LOG_FILE"
-        cp -r src/include/WinPE/http/WinPE $HTTP_PATH/ 2>&1 | tee -a "$LOG_FILE"
-        if grep -Eq "<IP>|<SMB_MOUNT_POINT\?>" $HTTP_PATH/WinPE/startup.bat; then
-            warning "You should modify $HTTP_PATH/WinPE/startup.bat to mount your SMB server; otherwise, WinPE may break"
+    if [[ -f assets/winpe/tftp/winpe/wimboot ]]; then
+        cp -r assets/winpe/tftp/winpe $TFTP_PATH/ 2>&1 | tee -a "$LOG_FILE"
+        cp -r assets/winpe/http/winpe $HTTP_PATH/ 2>&1 | tee -a "$LOG_FILE"
+        if grep -Eq "<IP>|<SMB_MOUNT_POINT\?>" $HTTP_PATH/winpe/startup.bat; then
+            warning "You should modify $HTTP_PATH/winpe/startup.bat to mount your SMB server; otherwise, WinPE may break"
         fi
         log "WinPE environment setup done."
     else
         warning "WinPE files not found! Will not install WinPE in PXE system"
     fi
     # Ghost files for WinPE
-    if [[ -f src/include/Ghost/Ghost/12.0.0.10618/ghost64.dmp ]]; then
-        cp -r src/include/Ghost/* $HTTP_PATH/ 2>&1 | tee -a "$LOG_FILE"
+    if [[ -f assets/ghost/Ghost/12.0.0.10618/ghost64.dmp ]]; then
+        cp -r assets/ghost/* $HTTP_PATH/ 2>&1 | tee -a "$LOG_FILE"
         log "Ghost for WinPE setup done. You can execute Ghost.bat to launch Ghost."
     else
         warning "Ghost files not found! Will not install Ghost in PXE system"
         warning "Manually install: sudo cp /path/to/you/Ghost/ $HTTP_PATH/Ghost"
     fi
+
+    # ==================== ADD: aarch64 function ====================
+    # iPXE binary files (aarch64)
+    cp /usr/local/lib/ipxe/snp-arm64.efi "$TFTP_PATH/ipxe/" 2>&1 | tee -a "$LOG_FILE"
+    # ===============================================================
 
     if [[ -f $BIN_PATH/pxe-umount-iso.sh ]]; then 
         $BIN_PATH/pxe-umount-iso.sh >> "$LOG_FILE" 2>&1
@@ -520,6 +560,9 @@ EOF
     log "Apache configuration setup done."
 }
 create_ipxe_menu() {
+    # NOTE: Menu entries are hardcoded for the bundled ISO set in assets/iso/.
+    # If you replace ISOs, please update :ubuntu-24.04.3 / :ubuntu-22.04.5 sections.
+
     log "Setup PXE boot menu..."
     tee $TFTP_PATH/ipxe/boot.ipxe > /dev/null << EOF
 #!ipxe
@@ -529,12 +572,18 @@ ifconf -c dhcp && goto netv4 || ifconf -c ipv6 && goto netv6 || goto dhcperror
 prompt --key s --timeout 10000 DHCP failed, hit 's' for the iPXE shell; reboot in 10 seconds && shell || reboot
 
 :netv6
-set pxeip [${PXE_SERVER_IPv6}] && goto boot_menu
+set pxeip [${PXE_SERVER_IPv6}] && goto arch_dispatch
 
 :netv4
-set pxeip ${PXE_SERVER_IPv4} && goto boot_menu
+set pxeip ${PXE_SERVER_IPv4} && goto arch_dispatch
 
-:boot_menu
+:arch_dispatch
+iseq \${buildarch} arm64 && goto menu_arm64 || goto menu_x86
+
+# ============================================================
+# x86 / x86_64 Menu
+# ============================================================
+:menu_x86
 menu PXE Boot Menu
 item --gap --             | Working Versions |
 item ubuntu-24.04.3       Ubuntu 24.04.3 Desktop, kernel 6.14
@@ -566,21 +615,49 @@ boot
 
 :WinPE
 echo Loading WinPE...
-kernel tftp://\${pxeip}/WinPE/wimboot
-initrd http://\${pxeip}/WinPE/bootmgr            bootmgr
-initrd http://\${pxeip}/WinPE/boot/bcd           boot/BCD
-initrd http://\${pxeip}/WinPE/boot/boot.sdi      boot/boot.sdi
-initrd http://\${pxeip}/WinPE/sources/boot.wim   boot/boot.wim
-initrd http://\${pxeip}/WinPE/winpeshl.ini       winpeshl.ini
-initrd http://\${pxeip}/WinPE/startup.bat        startup.bat
+kernel tftp://\${pxeip}/winpe/wimboot
+initrd http://\${pxeip}/winpe/bootmgr            bootmgr
+initrd http://\${pxeip}/winpe/boot/bcd           boot/BCD
+initrd http://\${pxeip}/winpe/boot/boot.sdi      boot/boot.sdi
+initrd http://\${pxeip}/winpe/sources/boot.wim   boot/boot.wim
+initrd http://\${pxeip}/winpe/winpeshl.ini       winpeshl.ini
+initrd http://\${pxeip}/winpe/startup.bat        startup.bat
 boot
-
-:ipxe_shell
-shell
 
 :efi_shell
 echo Loading EFI Shell...
 chain tftp://\${pxeip}/EFI/BOOT/Shellx64.efi
+
+# ============================================================
+# ARM64 Menu
+# ============================================================
+:menu_arm64
+menu PXE Boot Menu (ARM64)
+item --gap --             | Jetson Targets |
+item jetson-placeholder   Jetson Test Env (TBD)
+item --gap --
+item --gap --             | Advanced Options |
+item ipxe_shell           iPXE Shell
+item reboot               Reboot
+item exit                 Exit to UEFI
+choose selected && goto \${selected}
+
+:jetson-placeholder
+echo ============================================
+echo  Jetson PXE chain SUCCESS!
+echo  pxeip = \${pxeip}
+echo  buildarch = \${buildarch}
+echo  platform = \${platform}
+echo ============================================
+echo Press any key to return to menu...
+prompt --timeout 10000 || goto menu_arm64
+goto menu_arm64
+
+# ============================================================
+# Common targets
+# ============================================================
+:ipxe_shell
+shell
 
 :reboot
 reboot
@@ -596,7 +673,7 @@ EOF
 
 create_helper_scripts() {
     log "Setup scripts..."
-    cp src/script/* $BIN_PATH 2>&1 | tee -a "$LOG_FILE"
+    cp scripts/* $BIN_PATH 2>&1 | tee -a "$LOG_FILE"
     chmod +x $BIN_PATH/*.sh 2>&1 | tee -a "$LOG_FILE"
     log "Script setup done."
 }
@@ -681,7 +758,7 @@ mount_iso() {
         $BIN_PATH/pxe-mount-iso.sh 2>&1 | tee -a "$LOG_FILE"
     else
         warning "No ISO files found in $ISO_PATH"
-        warning "Please add your ISO files in your "$ISO_PATH". Run: sudo $BIN_PATH/pxe-mount-iso.sh"
+        warning "Please add your ISO files in your $ISO_PATH. Run: sudo $BIN_PATH/pxe-mount-iso.sh"
     fi
 
     log "ISO mounted."
@@ -702,7 +779,7 @@ EOF
     local services=(pxe-mount.service pxe-tftp-on-link.service apache2 tftpd-hpa isc-dhcp-server isc-dhcp-server6 radvd)
     for var in "${services[@]}"; do
         if systemctl is-active --quiet "$var"; then
-            log "$var: active" 2>&1 | tee -a "$LOG_FILE"
+            log "$var: active"
         else
             warning "$var: failed" 2>&1 | tee -a "$LOG_FILE"
             systemctl status $var 2>&1 | tee -a "$LOG_FILE"
@@ -748,11 +825,21 @@ umount_iso() {
 }
 
 uninstall() {
-    if [[ -f /pxe/config.env ]]; then
-        source /pxe/config.env || true
-        if [[ -d "$LOG_PATH" ]]; then
-            LOG_FILE="$LOG_PATH/logs-uninstall-${RUN_ID}.log"
+    if [[ ! -f /pxe/config.env ]]; then
+        error_exit "/pxe/config.env not found. Cannot determine PXE paths for safe uninstall."
+    fi
+    
+    # shellcheck disable=SC1091
+    source /pxe/config.env || error_exit "Failed to load /pxe/config.env"
+    
+    for v in HTTP_PATH TFTP_PATH BIN_PATH LOG_PATH; do
+        if [[ -z "${!v:-}" || "${!v}" == "/" ]]; then
+            error_exit "Variable $v is empty or unsafe. Aborting uninstall."
         fi
+    done
+    
+    if [[ -d "$LOG_PATH" ]]; then
+        LOG_FILE="$LOG_PATH/logs-uninstall-${RUN_ID}.log"
     fi
 
     log "Starting uninstallation..."
@@ -791,12 +878,12 @@ uninstall() {
     rm -f /etc/networkd-dispatcher/routable.d/start-dhcp-on-link >> "$LOG_FILE" 2>&1
     if [[ -d /pxe ]]; then
         rm -f /pxe/config.env 2>&1 | tee -a "$LOG_FILE" || warning "Failed to remove /pxe/config.env"
-        rm -rf $HTTP_PATH/* 2>&1 | tee -a "$LOG_FILE" || warning "Failed to remove /pxe/http"
-        rm -rf $TFTP_PATH/* 2>&1 | tee -a "$LOG_FILE" || warning "Failed to remove $TFTP_PATH"
-        rm -rf $BIN_PATH/* 2>&1 | tee -a "$LOG_FILE" || warning "Failed to remove $BIN_PATH"
+        rm -rf "$HTTP_PATH"/* 2>&1 | tee -a "$LOG_FILE" || warning "Failed to remove /pxe/http"
+        rm -rf "$TFTP_PATH"/* 2>&1 | tee -a "$LOG_FILE" || warning "Failed to remove $TFTP_PATH"
+        rm -rf "$BIN_PATH"/* 2>&1 | tee -a "$LOG_FILE" || warning "Failed to remove $BIN_PATH"
     fi
     log "Remove PXE server done!"
-    read -r -p "Do you want to reboot now? Y/[N]: " -n 1 REPLY
+    read -r -p "Do you want to reboot now? Y/[N]: " REPLY
     echo
     REPLY="${REPLY:-N}"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -833,13 +920,6 @@ EOF
 main() {
     set_color
     check_permission
-    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-        usage
-        exit 0
-    fi
-    
-    load_config
-    validate_config 
     SKIP_IPXE_BUILD=false
 
     while [[ $# -gt 0 ]]; do
@@ -861,25 +941,30 @@ main() {
                 exit 0
                 ;;
             -m|--mount)
+                load_config
+                validate_config
                 mount_iso
                 exit 0
                 ;;
             -u|--umount)
+                load_config
                 umount_iso
                 exit 0
                 ;;
             --no-ipxe-build)
                 SKIP_IPXE_BUILD=true
-                shift
                 ;;
             *)
-                warning "\"${1}\" is an invalid input parameter!"
+                warning "Invalid input: $1"
                 usage
                 exit 1
                 ;;
         esac
         shift
     done
+    load_config
+    validate_config 
+
     echo "Do you want to install PXE server?"
     echo "   [Y] Yes (Default) [N] No "
     read -r REPLY
@@ -903,8 +988,8 @@ main() {
     setup_apache
     create_ipxe_menu
     create_helper_scripts
-    mount_iso
     setup_services
+    mount_iso
     final_status
     log "PXE Server setup completed successfully!"
 }
