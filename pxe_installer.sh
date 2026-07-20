@@ -370,10 +370,15 @@ EOF
 build_ipxe() {
     log "Build iPXE from local source code (v1.21.1)..."
     local original_dir=$(pwd)
+    local ipxe_tarball="ipxe_${IPXE_VERSION}.tgz"
+    local ipxe_sha256="ipxe_${IPXE_VERSION}.tgz.sha256"
     cd "${SCRIPT_DIR}/third_party/" || error_exit "third_party dir not found"
     # git clone -b v1.21.1 --depth 1 https://github.com/ipxe/ipxe.git ipxe-v1.21.1
-    if [ ! -d ipxe_${IPXE_VERSION} ]; then
-        tar xzf ipxe_${IPXE_VERSION}.tgz || error_exit "Failed to extract ipxe_${IPXE_VERSION}.tgz"
+    if [ ! -d "ipxe_${IPXE_VERSION}" ]; then
+        [ -f "${ipxe_tarball}" ] || error_exit "Missing iPXE source archive: ${ipxe_tarball}"
+        [ -f "${ipxe_sha256}" ] || error_exit "Missing checksum file: ${ipxe_sha256}"
+        sha256sum -c "${ipxe_sha256}" || error_exit "SHA256 checksum failed for ${ipxe_tarball}"
+        tar xzf "${ipxe_tarball}" || error_exit "Failed to extract ${ipxe_tarball}"
     fi
     cd "${SCRIPT_DIR}/third_party/ipxe_${IPXE_VERSION}/src" || error_exit "iPXE source directory not found"
     
