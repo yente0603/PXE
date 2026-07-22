@@ -1,143 +1,178 @@
 #!/bin/bash
 
-set -eo pipefail
+set -euo pipefail
+
+# ─── Configuration ────────────────────────────────────────────────────────────
 RUN_ID=$(date '+%Y%m%d-%H%M%S')
 RUN_TS=$(date +%s)
 TEMP_LOG="/tmp/pxe_setup_${RUN_ID}.log"
 LOG_FILE="${TEMP_LOG}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_PATH="${SCRIPT_DIR}/config/"
+
+MAIN_PATH="/opt/pxe"
+TEMP_CONFIG_PATH="${SCRIPT_DIR}/config/"
+#TODO
 PXE_CONFIG_FILE="pxe.conf"
+DEFAULT_PXE_CONFIG="${TEMP_CONFIG_PATH}/pxe.conf"
+EXAMPLE_PXE_CONFIG="${TEMP_CONFIG_PATH}/pxe.conf.example"
+
+#TODO
+# 由 .run 的啟動 wrapper 設為 1, TODO
+# PXE_RUN_MODE="${PXE_RUN_MODE:-0}"
+CONFIG_FILE=""
+ACTIVE_CONFIG_FILE=""
+GENERATED_CONFIG_FILE=""
+
+SKIP_IPXE_BUILD=false
+
+# ─── Output helpers ───────────────────────────────────────────────────────────
+RED='\033[1;31m'; GREEN='\033[1;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+CURRENT_SECTION=""
+
+cleanup() {
+    if [[ -n "${GENERATED_CONFIG_FILE:-}" && -f "${GENERATED_CONFIG_FILE}" ]]; then
+        rm -f "${GENERATED_CONFIG_FILE}"
+    fi
+}
+trap cleanup EXIT
 
 log() {
     local message="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    # stdout
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "[${timestamp}] ${message}"
-    # log file
     echo -e "[${timestamp}] ${message}" | sed 's/\x1b\[[0-9;]*m//g' >> "${LOG_FILE}"
 }
 
-error_exit() {
+log_info() {
+    log "${CYAN}[INFO]${RESET} $1"
+}
+
+log_pass() {
+    log "${GREEN}[PASS]${RESET} $1"
+}
+
+log_warn() {
+    log "${YELLOW}[WARN]${RESET} $1"
+}
+
+log_error() {
     log "${RED}[ERROR]${RESET} $1"
     exit 1
 }
 
-warning() {
-    log "${YELLOW}[WARNING]${RESET} $1"
+section() {
+    CURRENT_SECTION="$*"
+    echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}" | tee -a "${LOG_FILE}"
 }
 
-check_permission() {
-    local SCRIPT_NAME=$(basename "$0")
-    if [[ $EUID -ne 0 ]]; then
-        error_exit "This script must be run with sudo, not as a normal user. Usage: sudo ./${SCRIPT_NAME} [OPTIONS]"
-    fi
-    if [[ -z "${SUDO_USER:-}" ]]; then
-        warning "Running as root directly (not via sudo). Proceeding anyway."
-    fi
+# ─── Pre-check Functions ───────────────────────────────────────────────────────────
+check_execution_context() {
+    section "Execution Context Check"
+
+    local script_name=$(basename "$0")
+    
+    [[ $EUID -eq 0 ]] || \
+        log_error "This script must be run with sudo. Usage: sudo ./${script_name} [OPTIONS]"
+
+    [[ -n "${SUDO_USER:-}" ]] || \
+        log_warn "Running directly as root (not via sudo). Proceeding anyway."
+
+    log_pass "Permission check completed."
 }
 
-set_color(){
-    RED='\e[31m'    # error
-    GREEN='\e[32m'  # ipxe patch
-    YELLOW='\e[33m' # warning
-    RESET='\e[0m'   # reset
+check_os_info(){
+    section "Check Operating System"
+
+    OS_NAME="$(uname -s)"
+    if [[ "$OS_NAME" != "Linux" ]]; then
+        log_error "Not Linux (detected: $OS_NAME)."
+    else
+        DISTRO="unknown"
+        if [[ -f /etc/os-release ]]; then
+            DISTRO="$(. /etc/os-release && echo "${PRETTY_NAME:-$NAME}")"
+        elif [[ -f /etc/lsb-release ]]; then
+            DISTRO="$(. /etc/lsb-release && echo "${DISTRIB_DESCRIPTION:-$DISTRIB_ID}")"
+        fi
+
+        # Jetson / L4T
+        # if [[ -f /etc/nv_tegra_release ]] || grep -qi "tegra\|jetson\|l4t" /etc/os-release 2>/dev/null; then
+        #     log_info "Linux — Jetson/L4T detected (${DISTRO})"
+        # Yocto
+        # elif grep -qi "yocto\|poky" /etc/os-release 2>/dev/null || [[ -f /etc/build ]]; then
+        #     log_info "Linux — Yocto detected (${DISTRO})"
+        # Ubuntu
+        if grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
+            log_info "Linux — Ubuntu detected (${DISTRO})"
+        else
+            log_warn "Linux detected (${DISTRO}) — not Ubuntu; may work but untested."
+        fi
+    fi
+
+    KERNEL="$(uname -r)"
+    log_info "Kernel: ${KERNEL}  Arch: $(uname -m)"
+    log_pass "OS check completed."
 }
 
 load_metadata() {
-    local metadata_file="${CONFIG_PATH}/metadata.env"
-    [[ -f "${metadata_file}" ]] || error_exit "${RED}[ERROR]${RED} Metadata file not found: ${metadata_file}"
+    section "Load Metadata"
+
+    local metadata_file="${TEMP_CONFIG_PATH}/metadata.env"
+    
+    [[ -f "${metadata_file}" ]] || \
+        log_error "Metadata file not found: ${metadata_file}"
+    
+    # shellcheck disable=SC1090
     source "${metadata_file}"
+    log_pass "Metadata load completed."
 }
 
 load_pxe_config() {
-    [[ -f "${CONFIG_PATH}/${PXE_CONFIG_FILE}" ]] || error_exit "Configuration file '${CONFIG_PATH}/${PXE_CONFIG_FILE}' not found! Please refer 'pxe.conf.example' to '${CONFIG_PATH}/${PXE_CONFIG_FILE}' and configure it before running."
-    log "Loading configuration from ${CONFIG_PATH}/${PXE_CONFIG_FILE}..."
+    section "Load PXE Config"
 
-    while IFS='=' read -r key value || [[ -n "$key" ]]; do
-        # Skip white line and command
-        [[ $key =~ ^[[:space:]]*# ]] && continue
-        [[ -z $(echo "$key" | xargs) ]] && continue
-
-        key=$(echo "$key" | xargs)
-        value=$(echo "$value" | xargs | sed 's/^["'\'']\|["'\'']$//g')
-
-        # source config.env
-        case "$key" in
-            PXE_INTERFACE|PXE_DOMAIN_NAME|PXE_BRIDGE|\
-            PXE_SERVER_IPv4|PXE_PREFIX_IPv4|PXE_SUBNET_IPv4|PXE_NETMASK_IPv4|PXE_DHCP_RANGE_START_IPv4|PXE_DHCP_RANGE_END_IPv4|DNS_SERVER_IPv4|\
-            PXE_SERVER_IPv6|PXE_PREFIX_IPv6|PXE_SUBNET_IPv6|PXE_DHCP_RANGE_START_IPv6|PXE_DHCP_RANGE_END_IPv6|DNS_SERVER_IPv6|\
-            ISO_PATH|HTTP_PATH|TFTP_PATH|LOG_PATH|BIN_PATH|\
-            DHCP_LEASE_TIME|DHCP_MAX_LEASE_TIME)
-                if [[ -z "$value" ]]; then
-                    error_exit "Variable '$key' in ${CONFIG_PATH}/${PXE_CONFIG_FILE} is empty! All required fields must have a value."
-                fi
-                export "$key=$value"
-                ;;
-        esac
-    done < "${CONFIG_PATH}/${PXE_CONFIG_FILE}"
-
-    if [[ ! -d "${LOG_PATH}" ]]; then
-        mkdir -p "${LOG_PATH}"
-    fi
-
-    FINAL_LOG="${LOG_PATH}/logs_${RUN_ID}.log"
-    cat "${TEMP_LOG}" >> "$FINAL_LOG" 
-    rm -f "${TEMP_LOG}"
-    LOG_FILE="$FINAL_LOG"
-    log "Configuration loaded successfully. All logs will be saved to ${LOG_FILE}"
-}
-
-validate_config() {
-    log "Validating configuration values..."
-
-    local required_vars=(
-        "PXE_INTERFACE" "PXE_SERVER_IPv4" "PXE_SERVER_IPv6" "PXE_BRIDGE" "ISO_PATH" 
-        "HTTP_PATH" "TFTP_PATH" "LOG_PATH" "BIN_PATH"
-    )
+    local config_file="${TEMP_CONFIG_PATH}/${PXE_CONFIG_FILE}"
     
-    for var in "${required_vars[@]}"; do
-        if [[ -z "${!var:-}" ]]; then
-            error_exit "Critical configuration missing: $var. Please check your ${CONFIG_PATH}/${PXE_CONFIG_FILE}."
-        fi
-    done
-    for var in HTTP_PATH TFTP_PATH LOG_PATH BIN_PATH; do
-        if [[ "${!var}" != ${MAIN_PATH}/* ]]; then
-            warning "$var is not under ${MAIN_PATH}. The script may not work correctly."
-        fi
-    done
-    if [[ ! -d "/sys/class/net/${PXE_INTERFACE}" ]]; then
-        error_exit "Network interface '${PXE_INTERFACE}' does not exist! Use 'ip link' to check your interface name."
-    fi
-    if [[ ! -d "${ISO_PATH}" ]]; then
-        error_exit "ISO_PATH '${ISO_PATH}' is not a directory or not mounted. Please check your external drive."
-    fi
-    log "Configuration validation passed."
+    [[ -f "$config_file" ]] || \
+        log_error "Configuration file '$config_file' not found."
+    
+    # shellcheck disable=SC1090
+    source "$config_file"
+
+    mkdir -p "${LOG_PATH}"
+    local final_log="${LOG_PATH}/logs_${RUN_ID}.log"
+    cat "${TEMP_LOG}" >> "${final_log}"
+    rm -f "${TEMP_LOG}"
+    LOG_FILE="${final_log}"
+    log_pass "PXE config load completed. Logs save to: ${LOG_FILE}"
 }
 
-welcomeinfo() {
+# ─── Main Functions ───────────────────────────────────────────────────────────
+show_welcome_info() {
     clear
+
     cat << EOF  | tee -a "${LOG_FILE}"
 ========================================================
-${PRODUCT_NAME}
+    ${PRODUCT_NAME}
 ========================================================
-Version: ${VERSION}
-Author: ${AUTHOR}
-Release Date: ${RELEASE_DATE}
+    Version: ${VERSION}
+    Author: ${AUTHOR}
+    Release Date: ${RELEASE_DATE}
 
-OS Version: $(lsb_release -d | cut -f2- | tr -d '\n'; echo -n " "; uname -r)
-PXE Domain Name: ${PXE_DOMAIN_NAME}
-PXE Interface: ${PXE_INTERFACE}
-PXE BRIDGE: ${PXE_BRIDGE}
-PXE SERVER [IPv4]: ${PXE_SERVER_IPv4}
-PXE SERVER [IPv6]: ${PXE_SERVER_IPv6}
-Date/Time: $(date)
+    OS: ${DISTRO} (${KERNEL})
+    PXE Domain Name: ${PXE_DOMAIN_NAME}
+    PXE Interface: ${PXE_INTERFACE}
+    PXE BRIDGE: ${PXE_BRIDGE}
+    PXE SERVER [IPv4]: ${PXE_SERVER_IPv4}
+    PXE SERVER [IPv6]: ${PXE_SERVER_IPv6}
+    Date/Time: $(date)
 ========================================================
+
 EOF
 }
 
-dependency() {
-    log "Installing required packages..."
+install_dependency() {
+    log "Install dependency..."
+
     apt update >> "${LOG_FILE}" 2>&1
     apt install -y isc-dhcp-server tftpd-hpa tftp-hpa apache2 \
         syslinux-common syslinux-efi syslinux git gcc binutils \
@@ -148,17 +183,18 @@ dependency() {
         nfs-kernel-server >> "${LOG_FILE}" 2>&1    
     apt remove -y ipxe >> "${LOG_FILE}" 2>&1 || true
     apt autoremove -y > /dev/null 2>&1
-    log "Package installation completed."
+
+    log_pass "Dependency install completed."
 }
 
-firewall() {
+setup_firewall() {
     log "Check firewall status..."
+
     ufw status 2>&1 | tee -a "${LOG_FILE}"
 
-    warning "Skipping firewall setup..."
-    warning "Firewall setup is disabled in this script."
-    warning "Make sure this server is in a trusted network environment."
-    warning "To enable firewall protection, uncomment the following rules in script."
+    log_warn "Skip firewall setup."
+    log_warn "Firewall setup is disabled in this version (${VERSION})."
+    log_warn "Make sure this server is in a trusted network environment."
 
     # log "Setup Firewall..."
     # ========================================================
@@ -183,7 +219,7 @@ firewall() {
 }
 
 setup_dir() {
-    log "Creating essential directory..."
+    log "Setup essential directory..."
 
     local dirs=(
         "${HTTP_PATH}"
@@ -191,14 +227,15 @@ setup_dir() {
         "${BIN_PATH}"
     )
 
-    for dir in "${dirs[@]}"; do mkdir -p "${dir}"; log "Creating directory: ${dir}"; done
+    for dir in "${dirs[@]}"; do mkdir -p "${dir}"; log_pass "Directories setup completed: ${dir}"; done
 }
 
+# ─── Network Functions ───────────────────────────────────────────────────────────
 setup_networkmanager() {
     log "Setup static IPv4 and IPv6 configuration..."
     
     if [[ -f "/etc/netplan/02-pxe.yaml" ]]; then
-        warning "Backing up existing netplan"
+        log_warn "Back up existing netplan."
         cp "/etc/netplan/02-pxe.yaml" "/etc/netplan/02-pxe.yaml.backup.${RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
     fi
     
@@ -224,27 +261,31 @@ network:
       dhcp6: false
 EOF
     sed 's/^/[NETPLAN] /' "/etc/netplan/02-pxe.yaml" >> "${LOG_FILE}"
-    log "Applying network configuration..."
+
+    log "Apply NetworkManager configuration..."
     chmod 600 /etc/netplan/02-pxe.yaml
     nmcli connection reload || true
     if netplan apply 2>&1 | tee -a "${LOG_FILE}"; then
-        log "NetworkManager configuration applied successfully for ${PXE_INTERFACE}"
+        log "NetworkManager configuration apply successfully for ${PXE_INTERFACE}"
     else
-        error_exit "Failed to apply netplan configuration!"
+        log_error "Fail to apply netplan configuration."
     fi
-    sleep 3
     
-    log "Current Network Status (Bridge ${PXE_BRIDGE}):"
+    sleep 3
     ip addr show "${PXE_BRIDGE}" | grep -E "inet |inet6 |state" 2>&1 | tee -a "${LOG_FILE}"
+    
+    log_pass "NetworkManager setup completed. (PXE Bridge: ${PXE_BRIDGE})"
 }
+
 setup_dhcp() {
     log "Setup DHCP server..."
+
     if [[ -f "/etc/dhcp/dhcpd.conf" ]]; then
-        warning "Backing up existing dhcp configuration"
+        log_warn "Back up existing dhcp configuration."
         cp "/etc/dhcp/dhcpd.conf" "/etc/dhcp/dhcpd.conf.backup.${RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
     fi
     if [[ -f "/etc/dhcp/dhcpd6.conf" ]]; then
-        warning "Backing up existing IPv6 dhcp configuration"
+        log_warn "Back up existing dhcp6 configuration."
         cp "/etc/dhcp/dhcpd6.conf" "/etc/dhcp/dhcpd6.conf.backup.${RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
     fi
 
@@ -314,13 +355,15 @@ INTERFACESv4="${PXE_BRIDGE}"
 INTERFACESv6="${PXE_BRIDGE}"
 EOF
     sed 's/^/[isc-dhcp-server] /' "/etc/default/isc-dhcp-server" >> "${LOG_FILE}"
-    log "DHCP configuration setup ${PXE_BRIDGE} done."
+
+    log_pass "DHCP setup completed. (PXE Bridge: ${PXE_BRIDGE})"
 }
 
 setup_radvd() {
-    log "Setup Router Advertisement Daemon (radvd)..."
+    log "Setup router advertisement daemon (radvd)..."
+
     if [[ -f "/etc/radvd.conf" ]]; then
-        warning "Backing up existing radvd configuration"
+        log_warn "Back up existing radvd configuration."
         cp "/etc/radvd.conf" "/etc/radvd.conf.backup.${RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
     fi
 
@@ -343,17 +386,18 @@ interface ${PXE_BRIDGE}
 EOF
     sed 's/^/[radvd] /' /etc/radvd.conf >> "${LOG_FILE}"
     
-    # Modify sysctl to allow forwarding (although PXE Server typically does not forward, radvd sometimes requires this setting to take effect).
-    echo "net.ipv6.conf.all.forwarding=1" > /etc/sysctl.d/99-radvd.conf
+    echo "net.ipv6.conf.all.forwarding=1" > /etc/sysctl.d/99-radvd.conf # Modify sysctl to allow forwarding (although PXE Server typically does not forward, radvd sometimes requires this setting to take effect).
     sysctl -p /etc/sysctl.d/99-radvd.conf >> "${LOG_FILE}" 2>&1
 
-    log "radvd configuration setup done."
+    log_pass "Radvd setup completed."
 }
 
+# ─── TFTP Functions ───────────────────────────────────────────────────────────
 setup_tftp() {
     log "Setup TFTP server..."
+
     if [[ -f "/etc/default/tftpd-hpa" ]]; then
-        warning "Backing up existing tftp configuration"
+        log_warn "Back up existing tftp configuration."
         cp "/etc/default/tftpd-hpa" "/etc/default/tftpd-hpa.backup.${RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
     fi
     
@@ -364,60 +408,64 @@ TFTP_ADDRESS="[::]:69"
 TFTP_OPTIONS="--secure --verbose"
 EOF
     sed 's/^/[TFTP] /' "/etc/default/tftpd-hpa" >> "${LOG_FILE}"
-    log "TFTP configuration setup done."
+
+    log_pass "TFTP setup completed."
 }
 
+# ─── iPXE Functions ───────────────────────────────────────────────────────────
 build_ipxe() {
     log "Build iPXE from local source code (v1.21.1)..."
+
     local original_dir=$(pwd)
     local ipxe_tarball="ipxe_${IPXE_VERSION}.tgz"
     local ipxe_sha256="ipxe_${IPXE_VERSION}.tgz.sha256"
-    cd "${SCRIPT_DIR}/third_party/" || error_exit "third_party dir not found"
+
+    cd "${SCRIPT_DIR}/third_party/" || log_error "third_party dir not found."
     # git clone -b v1.21.1 --depth 1 https://github.com/ipxe/ipxe.git ipxe-v1.21.1
     if [ ! -d "ipxe_${IPXE_VERSION}" ]; then
-        [ -f "${ipxe_tarball}" ] || error_exit "Missing iPXE source archive: ${ipxe_tarball}"
-        [ -f "${ipxe_sha256}" ] || error_exit "Missing checksum file: ${ipxe_sha256}"
-        sha256sum -c "${ipxe_sha256}" || error_exit "SHA256 checksum failed for ${ipxe_tarball}"
-        tar xzf "${ipxe_tarball}" || error_exit "Failed to extract ${ipxe_tarball}"
+        [ -f "${ipxe_tarball}" ] || log_error "Missing iPXE source archive: ${ipxe_tarball}"
+        [ -f "${ipxe_sha256}" ] || log_error "Missing checksum file: ${ipxe_sha256}"
+        sha256sum -c "${ipxe_sha256}" || log_error "SHA256 checksum failed for ${ipxe_tarball}"
+        tar xzf "${ipxe_tarball}" || log_error "Failed to extract ${ipxe_tarball}"
     fi
-    cd "${SCRIPT_DIR}/third_party/ipxe_${IPXE_VERSION}/src" || error_exit "iPXE source directory not found"
+    cd "${SCRIPT_DIR}/third_party/ipxe_${IPXE_VERSION}/src" || log_error "iPXE source directory not found."
     
     local ipxe_config="config/general.h"
     # Check ipxe/src/config/general.h enable IPv6
     if grep -q '^[[:space:]]*//\s*#define\s*NET_PROTO_IPV6' "${ipxe_config}"; then
-        log "${GREEN}[iPXE PATCH]${RESET} Enabling NET_PROTO_IPV6 in ${ipxe_config}..."
+        log_info "Enabling NET_PROTO_IPV6 in ${ipxe_config}..."
         if sed -i 's|^[[:space:]]*//[[:space:]]*#define[[:space:]]\+NET_PROTO_IPV6|#define NET_PROTO_IPV6|' "${ipxe_config}"; then
-            log "${GREEN}[iPXE PATCH]${RESET} NET_PROTO_IPV6 enabled successfully"
+            log_info "NET_PROTO_IPV6 enabled successfully."
         else
-            warning "${GREEN}[iPXE PATCH]${RESET} Failed to enable NET_PROTO_IPV6"
+            log_warn "Failed to enable NET_PROTO_IPV6."
         fi
     else
-        log "${GREEN}[iPXE PATCH]${RESET} NET_PROTO_IPV6 is already enabled or not found."
+        log_info "NET_PROTO_IPV6 is already enabled or not found."
     fi
 
     # Check ipxe/src/config/general.h enable PING command
     if grep -q '^[[:space:]]*//\s*#define\s*PING_CMD' "${ipxe_config}"; then
-        log "${GREEN}[iPXE PATCH]${RESET} Enabling PING_CMD in ${ipxe_config}..."
+        log_info "Enabling PING_CMD in ${ipxe_config}..."
         if sed -i 's/^[[:space:]]*\/\/#define\s*PING_CMD/#define PING_CMD/' "${ipxe_config}"; then
-            log "${GREEN}[iPXE PATCH]${RESET} PING_CMD enabled successfully"
+            log_info "PING_CMD enabled successfully."
         else
-            warning "${GREEN}[iPXE PATCH]${RESET} Failed to enable PING_CMD"
+            log_warn "Failed to enable PING_CMD."
         fi
     else
-        log "${GREEN}[iPXE PATCH]${RESET} PING_CMD is already enabled or not found."
+        log_info "PING_CMD is already enabled or not found."
     fi
 
     # Disable autoexec function in script
     ipxe_config="interface/efi/efiprefix.c"
     if grep -q '^[[:space:]]*efi_autoexec_load()' "${ipxe_config}"; then
-        log "${GREEN}[iPXE PATCH]${RESET} Disabling efi_autoexec_load() in ${ipxe_config}..."
+        log_info "Disabling efi_autoexec_load() in ${ipxe_config}..."
         if sed -i 's/^[[:space:]]*efi_autoexec_load()/\/\/ &/' "${ipxe_config}"; then
-            log "${GREEN}[iPXE PATCH]${RESET} efi_autoexec_load() disabled successfully"
+            log_info "efi_autoexec_load() disabled successfully."
         else
-            warning "${GREEN}[iPXE PATCH]${RESET} Failed to disable efi_autoexec_load()"
+            log_warn "Failed to disable efi_autoexec_load()."
         fi
     else
-        log "${GREEN}[iPXE PATCH]${RESET} efi_autoexec_load() is already disabled or not found."
+        log_info "efi_autoexec_load() is already disabled or not found."
     fi
 
     make distclean >> "${LOG_FILE}" 2>&1 || true
@@ -425,22 +473,22 @@ build_ipxe() {
 
     log "Build iPXE BIOS version (undionly.kpxe)..."
     if ! make bin/undionly.kpxe -j$(nproc) >> "${LOG_FILE}" 2>&1; then
-        error_exit "Failed to build iPXE BIOS version!"
+        log_error "Failed to build iPXE BIOS version!"
     fi
     log "Build iPXE UEFI version (ipxe.efi with IPv6 support)..."
     if ! make bin-x86_64-efi/ipxe.efi -j$(nproc) >> "${LOG_FILE}" 2>&1; then
-        error_exit "Failed to build iPXE UEFI version!"
+        log_error "Failed to build iPXE UEFI version!"
     fi
    
     mkdir -p /usr/local/lib/ipxe
     cp "bin/undionly.kpxe" "/usr/local/lib/ipxe/undionly-legacy.kpxe" 2>&1 | tee -a "${LOG_FILE}"
     cp "bin-x86_64-efi/ipxe.efi" "/usr/local/lib/ipxe/ipxe-x86.efi"  2>&1 | tee -a "${LOG_FILE}"
 
-    # ==================== ADD: aarch64 function ====================
+    # ==================== V2.2: aarch64 function ====================
     # log "Build iPXE ARM64 UEFI version ..."
     # if ! make bin-arm64-efi/ipxe.efi -j$(nproc) \
     #     CROSS_COMPILE=aarch64-linux-gnu- >> "${LOG_FILE}" 2>&1; then
-    #     warning "Failed to build iPXE ARM64 UEFI version!"
+    #     log_warn "Failed to build iPXE ARM64 UEFI version!"
     # fi
     # cp "bin-arm64-efi/ipxe.efi" "/usr/local/lib/ipxe/ipxe-arm64.efi" 2>&1 | tee -a "${LOG_FILE}"
 
@@ -450,120 +498,89 @@ build_ipxe() {
     log "Build iPXE ARM64 UEFI version ..."
     if ! make bin-arm64-efi/snp.efi -j$(nproc) \
         CROSS_COMPILE=aarch64-linux-gnu- >> "${LOG_FILE}" 2>&1; then
-        warning "Failed to build iPXE ARM64 UEFI version!"
+        log_warn "Failed to build iPXE ARM64 UEFI version!"
     fi
     cp "bin-arm64-efi/snp.efi" "/usr/local/lib/ipxe/snp-arm64.efi" 2>&1 | tee -a "${LOG_FILE}"
     # ===============================================================
 
     cd "${original_dir}"
-    log "iPXE build completed."
+
+    log_pass "iPXE setup completed."
 }
 
 setup_pxe_files() {
     log "Setup PXE files..."
     
-    # configuration
-    cp "${CONFIG_PATH}/${PXE_CONFIG_FILE}" "${MAIN_PATH}/" 2>&1 | tee -a "${LOG_FILE}"
+    # pxe.conf
+    cp "${TEMP_CONFIG_PATH}/${PXE_CONFIG_FILE}" "${MAIN_PATH}/" 2>&1 | tee -a "${LOG_FILE}"
+    
+    log "pxe.conf setup completed."
+    
     # iPXE binary files (x86)
     cp "/usr/local/lib/ipxe/undionly-legacy.kpxe" "${TFTP_PATH}/ipxe/" 2>&1 | tee -a "${LOG_FILE}"
     cp "/usr/local/lib/ipxe/ipxe-x86.efi" "${TFTP_PATH}/ipxe/" 2>&1 | tee -a "${LOG_FILE}"
-    # SYSLUNUX modules
-    cp /usr/lib/syslinux/modules/bios/*.c32 "${TFTP_PATH}/bios" 2>&1 | tee -a "${LOG_FILE}"
-    cp "/usr/lib/SYSLINUX.EFI/efi64/syslinux.efi" "${TFTP_PATH}/efi" 2>&1 | tee -a "${LOG_FILE}"
-    # EFI shell files
-    if [[ -f assets/efi/BOOT/Shellx64.efi ]]; then
-        cp -r "assets/efi/BOOT/" "${TFTP_PATH}/efi/" 2>&1 | tee -a "${LOG_FILE}"
-        log "EFI Shell setup done."
-    else
-        warning "EFI shell files not found! Will not install EFI Shell in PXE system"
-        warning "Manually install: sudo cp /path/to/you/efi/ ${TFTP_PATH}/efi"
-    fi
-    # WinPE files
-    if [[ -f assets/winpe/tftp/winpe/wimboot ]]; then
-        cp -r "assets/winpe/tftp/winpe" "${TFTP_PATH}/" 2>&1 | tee -a "${LOG_FILE}"
-        cp -r "assets/winpe/http/winpe" "${HTTP_PATH}/" 2>&1 | tee -a "${LOG_FILE}"
-        if grep -Eq "<IP>|<SMB_MOUNT_POINT\?>" ${HTTP_PATH}/winpe/startup.bat; then
-            warning "You should modify ${HTTP_PATH}/winpe/startup.bat to mount your SMB server; otherwise, WinPE may break"
-        fi
-        log "WinPE environment setup done."
-    else
-        warning "WinPE files not found! Will not install WinPE in PXE system"
-        warning "Manually copy WinPE related files in ${TFTP_PATH}/winpe and ${HTTP_PATH}/winpe"
-    fi
-    # Ghost files for WinPE
-    if [[ -f assets/ghost/Ghost/12.0.0.10618/ghost64.dmp ]]; then
-        cp -r assets/ghost/* "${HTTP_PATH}/" 2>&1 | tee -a "${LOG_FILE}"
-        log "Ghost for WinPE setup done. You can execute Ghost.bat to launch Ghost."
-    else
-        warning "Ghost files not found! Will not install Ghost in PXE system"
-        warning "Manually install: sudo cp /path/to/you/Ghost/ ${HTTP_PATH}/Ghost"
-    fi
 
-    # ==================== ADD: aarch64 function ====================
+    # ==================== V2.2: aarch64 function ====================
     # iPXE binary files (aarch64)
     cp "/usr/local/lib/ipxe/snp-arm64.efi" "${TFTP_PATH}/ipxe/" 2>&1 | tee -a "${LOG_FILE}"
     # ===============================================================
 
-    if [[ -f ${BIN_PATH}/pxe_umount_iso.sh ]]; then 
+    # SYSLUNUX modules
+    cp /usr/lib/syslinux/modules/bios/*.c32 "${TFTP_PATH}/bios" 2>&1 | tee -a "${LOG_FILE}"
+    cp "/usr/lib/SYSLINUX.EFI/efi64/syslinux.efi" "${TFTP_PATH}/efi" 2>&1 | tee -a "${LOG_FILE}"
+
+    log "iPXE related files setup completed."
+    
+    # EFI shell files
+    if [[ -f "${SCRIPT_DIR}/assets/efi/BOOT/Shellx64.efi" ]]; then
+        cp -r "assets/efi/BOOT/" "${TFTP_PATH}/efi/" 2>&1 | tee -a "${LOG_FILE}"
+        log "EFI Shell setup completed."
+    else
+        log_warn "EFI shell files not found! EFI shell Will not be installed in PXE system."
+        log_warn "Manually install: sudo cp /path/to/you/efi/ ${TFTP_PATH}/efi"
+    fi
+    
+    # WinPE files
+    if [[ -f "${SCRIPT_DIR}/assets/winpe/tftp/winpe/wimboot" ]]; then
+        cp -r "assets/winpe/tftp/winpe" "${TFTP_PATH}/" 2>&1 | tee -a "${LOG_FILE}"
+        cp -r "assets/winpe/http/winpe" "${HTTP_PATH}/" 2>&1 | tee -a "${LOG_FILE}"
+        if grep -Eq "<IP>|<SMB_MOUNT_POINT\?>" ${HTTP_PATH}/winpe/startup.bat; then
+            log_warn "You should modify ${HTTP_PATH}/winpe/startup.bat to mount your SMB server; otherwise, WinPE may break"
+        fi
+        log "WinPE env setup completed."
+    else
+        log_warn "WinPE files not found! WinPE env Will not be installed in PXE system."
+        log_warn "Manually copy WinPE related files in ${TFTP_PATH}/winpe and ${HTTP_PATH}/winpe"
+    fi
+    
+    # Ghost files for WinPE
+    if [[ -f "${SCRIPT_DIR}/assets/ghost/Ghost/12.0.0.10618/ghost64.dmp" ]]; then
+        cp -r "${SCRIPT_DIR}"/assets/ghost/* "${HTTP_PATH}/" 2>&1 | tee -a "${LOG_FILE}"
+        log "Ghost in WinPE env setup completed. You can execute Ghost.bat to launch Ghost in WinPE."
+    else
+        log_warn "Ghost files not found! Ghost Will not be installed in PXE system."
+        log_warn "Manually install: sudo cp /path/to/you/Ghost/ ${HTTP_PATH}/Ghost"
+    fi
+
+
+    if [[ -f "${BIN_PATH}/pxe_umount_iso.sh" ]]; then 
+        log_warn "Remove already mounted iso first."
         "${BIN_PATH}/pxe_umount_iso.sh" >> "${LOG_FILE}" 2>&1
     fi
+
     chown -R tftp:tftp "${TFTP_PATH}"
     chown -R www-data:www-data "${HTTP_PATH}"
     chmod -R 755 "${MAIN_PATH}"
-    log "PXE files setup done."
+
+    log_pass "PXE files setup completed."
 }
 
-setup_apache() {
-    log "Setup Apache web server..."
-    
-    if [[ -f "/etc/apache2/sites-available/pxe_apache.conf" ]]; then
-        warning "Backing up existing apache configuration"
-        cp "/etc/apache2/sites-available/pxe_apache.conf" "/etc/apache2/sites-available/pxe_apache.conf.backup.${RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
-    fi
-    
-    tee /etc/apache2/sites-available/pxe_apache.conf > /dev/null << EOF
-<VirtualHost *:80 [::]:80>
-    DocumentRoot ${HTTP_PATH}
-    
-    <Directory ${HTTP_PATH}>
-        Options Indexes FollowSymLinks
-        AllowOverride None
-        Require all granted
-    </Directory>
-    
-    Alias /ipxe ${TFTP_PATH}/ipxe
-    <Directory ${TFTP_PATH}/ipxe>
-        Options Indexes
-        AllowOverride None
-        Require all granted
-    </Directory>
-    
-    Alias /iso ${ISO_PATH}
-    <Directory ${ISO_PATH}>
-        Options Indexes FollowSymLinks
-        AllowOverride None
-        Require all granted
-    </Directory>
-</VirtualHost>
-EOF
-    sed 's/^/[Apache2] /' /etc/apache2/sites-available/pxe_apache.conf >> "${LOG_FILE}"
-
-    # enable site and modules
-    a2ensite pxe_apache.conf 2>&1 | tee -a "${LOG_FILE}"
-    a2dissite 000-default.conf 2>/dev/null || true
-    a2enmod headers 2>&1 | tee -a "${LOG_FILE}"
-    systemctl reload apache2 2>&1 | tee -a "${LOG_FILE}"
-    systemctl daemon-reload 2>&1 | tee -a "${LOG_FILE}"
-
-    # test Apache configuration
-    apache2ctl configtest 2>&1 | tee -a "${LOG_FILE}"
-    log "Apache configuration setup done."
-}
 create_ipxe_menu() {
     # NOTE: Menu entries are hardcoded for the bundled ISO set in assets/iso/.
     # If you replace ISOs, please update :ubuntu-24.04.3 / :ubuntu-22.04.5 sections.
 
     log "Setup PXE boot menu..."
+    
     tee ${TFTP_PATH}/ipxe/boot.ipxe > /dev/null << EOF
 #!ipxe
 ifconf -c dhcp && goto netv4 || ifconf -c ipv6 && goto netv6 || goto dhcperror
@@ -626,7 +643,7 @@ boot
 
 :efi_shell
 echo Loading EFI Shell...
-chain tftp://\${pxeip}/efi/BOOT/Shellx64.efi
+chain tftp://\${pxeip}/efi/boot/Shellx64.efi
 
 # ============================================================
 # ARM64 Menu
@@ -665,21 +682,76 @@ reboot
 :exit
 exit
 EOF
+
     chown tftp:tftp ${TFTP_PATH}/ipxe/boot.ipxe
     chmod 755 ${TFTP_PATH}/ipxe/boot.ipxe
     sed 's/^/[iPXE Menu] /' ${TFTP_PATH}/ipxe/boot.ipxe >> "${LOG_FILE}"
-    log "PXE menu setup done."
+
+    log_pass "PXE menu setup completed."
 }
 
+# ─── Apache Functions ───────────────────────────────────────────────────────────
+setup_apache() {
+    log "Setup Apache web server..."
+    
+    if [[ -f "/etc/apache2/sites-available/pxe_apache.conf" ]]; then
+        log_warn "Back up existing apache configuration."
+        cp "/etc/apache2/sites-available/pxe_apache.conf" "/etc/apache2/sites-available/pxe_apache.conf.backup.${RUN_ID}" 2>&1 | tee -a "${LOG_FILE}"
+    fi
+    
+    tee /etc/apache2/sites-available/pxe_apache.conf > /dev/null << EOF
+<VirtualHost *:80 [::]:80>
+    DocumentRoot ${HTTP_PATH}
+    
+    <Directory ${HTTP_PATH}>
+        Options Indexes FollowSymLinks
+        AllowOverride None
+        Require all granted
+    </Directory>
+    
+    Alias /ipxe ${TFTP_PATH}/ipxe
+    <Directory ${TFTP_PATH}/ipxe>
+        Options Indexes
+        AllowOverride None
+        Require all granted
+    </Directory>
+    
+    Alias /iso ${ISO_PATH}
+    <Directory ${ISO_PATH}>
+        Options Indexes FollowSymLinks
+        AllowOverride None
+        Require all granted
+    </Directory>
+</VirtualHost>
+EOF
+    sed 's/^/[Apache2] /' /etc/apache2/sites-available/pxe_apache.conf >> "${LOG_FILE}"
+
+    # enable site and modules
+    a2ensite pxe_apache.conf 2>&1 | tee -a "${LOG_FILE}"
+    a2dissite 000-default.conf 2>/dev/null || true
+    a2enmod headers 2>&1 | tee -a "${LOG_FILE}"
+    systemctl reload apache2 2>&1 | tee -a "${LOG_FILE}"
+    systemctl daemon-reload 2>&1 | tee -a "${LOG_FILE}"
+
+    # test apache configuration
+    apache2ctl configtest 2>&1 | tee -a "${LOG_FILE}"
+
+    log_pass "Apache setup completed."
+}
+
+# ─── Scripts And Systemd Functions ───────────────────────────────────────────────────────────
 create_helper_scripts() {
     log "Setup scripts..."
-    cp scripts/* ${BIN_PATH} 2>&1 | tee -a "${LOG_FILE}"
+
+    cp "${SCRIPT_DIR}"/scripts/* ${BIN_PATH} 2>&1 | tee -a "${LOG_FILE}"
     chmod +x "${BIN_PATH}"/*.sh 2>&1 | tee -a "${LOG_FILE}"
-    log "Script setup done."
+
+    log_pass "Scripts setup completed."
 }
 
 setup_services() {
     log "Setup systemd services..."
+    
     # log "Force cleanup old masked unit if exists..."
     # rm -f /etc/systemd/system/pxe-mount.service
     # rm -f /etc/systemd/system/pxe-tftp-on-link.service
@@ -736,54 +808,66 @@ EOF
     systemctl daemon-reload 
     local services=(pxe-mount.service pxe-tftp-on-link.service apache2 tftpd-hpa isc-dhcp-server isc-dhcp-server6 radvd)
     for var in "${services[@]}"; do
-        systemctl enable "$var" 2>&1 | tee -a "${LOG_FILE}"
-        if ! systemctl start "$var" 2>&1 | tee -a "${LOG_FILE}"; then
-            warning "$var failed to start (maybe NIC down)"
-            warning "Please use command below to restart the DHCP service when you connect the PXE DHCP port."
-            warning "   $ sudo systemctl restart isc-dhcp-server.service"
+        systemctl enable "${var}" 2>&1 | tee -a "${LOG_FILE}"
+        if ! systemctl start "${var}" 2>&1 | tee -a "${LOG_FILE}"; then
+            log_warn "${var} failed to start"
+            log_warn "Please use command below to restart the service when you connect the PXE interface."
+            log_warn "   $ sudo systemctl restart ${var}"
         fi
     done
-    
-    # systemctl status pxe-mount.service pxe-tftp-on-link.service \
-    # apache2 tftpd-hpa isc-dhcp-server isc-dhcp-server6
-    log "Services configuration setup done and started"
+
+    log_pass "Services setup completed"
 }
 
+# ─── ISO Functions ───────────────────────────────────────────────────────────
 mount_iso() {
     log "Mount existing ISO files..."
     
     # if [ -d "${ISO_PATH}" ] && [ "$(ls -A ${ISO_PATH}/*.iso 2>/dev/null)" ]; then
     if compgen -G "${ISO_PATH}/*.iso" > /dev/null; then
-        ${BIN_PATH}/pxe_mount_iso.sh 2>&1 | tee -a "${LOG_FILE}"
+        "${BIN_PATH}/pxe_mount_iso.sh" 2>&1 | tee -a "${LOG_FILE}"
     else
-        warning "No ISO files found in ${ISO_PATH}"
-        warning "Please add your ISO files in your ${ISO_PATH}. Run: sudo ${BIN_PATH}/pxe_mount_iso.sh"
+        log_warn "No ISO files found in ${ISO_PATH}"
+        log_warn "Please add your ISO files in ${ISO_PATH} and execute following command: sudo ${BIN_PATH}/pxe_mount_iso.sh"
     fi
 
-    log "ISO mounted."
+    log_pass "ISO setup completed."
 }
 
+umount_iso() {
+    log "Unmount existing ISO files..."
+
+    if [[ -x ${BIN_PATH}/pxe_umount_iso.sh ]]; then
+        ${BIN_PATH}/pxe_umount_iso.sh
+    else
+        log_warn "Umount script not found, skipping..."
+    fi
+
+    log_pass "ISO unmount completed."
+}
+
+# ─── Final Chcek ───────────────────────────────────────────────────────────
 final_status() {
-    log "Checking service status..."
-    
+    log ""
     cat << EOF | tee -a "${LOG_FILE}"
 ========================================================
-PXE Server Setup Complete! 
+    ${PRODUCT_NAME} Setup Complete! 
 ========================================================
 EOF
     log "Build PXE Script Version: ${VERSION}"
-    log "OS Version: $(lsb_release -d | cut -f2- | tr -d '\n'; echo -n " "; uname -r)"
+    log "OS: ${DISTRO} (${KERNEL})"
 
-    log "Service status:"
+    log "Service Status:"
     local services=(pxe-mount.service pxe-tftp-on-link.service apache2 tftpd-hpa isc-dhcp-server isc-dhcp-server6 radvd)
     for var in "${services[@]}"; do
         if systemctl is-active --quiet "$var"; then
             log "$var: active"
         else
-            warning "$var: failed" 2>&1 | tee -a "${LOG_FILE}"
+            log_warn "$var: failed" 2>&1 | tee -a "${LOG_FILE}"
             systemctl status $var 2>&1 | tee -a "${LOG_FILE}"
         fi
     done
+    
     log ""
     log "Network Configuration: ${PXE_BRIDGE}"
     ip addr show "${PXE_BRIDGE}" | grep -E "inet |inet6 |state" 2>&1 | tee -a "${LOG_FILE}"
@@ -798,7 +882,7 @@ EOF
     log "  > TFTP Root: ${TFTP_PATH}"
     log "  > HTTP Root: ${HTTP_PATH}"
     log ""
-    log "All setup logs saved to: ${LOG_FILE}"
+    log "All Setup Logs Saved to: ${LOG_FILE}"
     log ""
 
     END_TS=$(date +%s)
@@ -815,25 +899,18 @@ EOF
 EOF
 }
 
-umount_iso() {
-    if [[ -x ${BIN_PATH}/pxe_umount_iso.sh ]]; then
-        ${BIN_PATH}/pxe_umount_iso.sh
-    else
-        warning "Umount script not found, skipping..."
-    fi
-}
-
+# ─── Uninstall ───────────────────────────────────────────────────────────
 uninstall() {
-    if [[ ! -f ${MAIN_PATH}/${PXE_CONFIG_FILE} ]]; then
-        error_exit "${MAIN_PATH}/${PXE_CONFIG_FILE} not found. Cannot determine PXE paths for safe uninstall."
-    fi
-    
     # shellcheck disable=SC1091
-    source "${MAIN_PATH}/${PXE_CONFIG_FILE}" || error_exit "Failed to load ${MAIN_PATH}/${PXE_CONFIG_FILE}"
+    source "${MAIN_PATH}/${PXE_CONFIG_FILE}" || log_error "Failed to load ${MAIN_PATH}/${PXE_CONFIG_FILE}"
+
+    if [[ ! -f ${MAIN_PATH}/${PXE_CONFIG_FILE} ]]; then
+        log_error "${MAIN_PATH}/${PXE_CONFIG_FILE} not found. Cannot determine PXE paths for safe uninstall."
+    fi    
     
     for v in HTTP_PATH TFTP_PATH BIN_PATH LOG_PATH; do
         if [[ -z "${!v:-}" || "${!v}" == "/" ]]; then
-            error_exit "Variable $v is empty or unsafe. Aborting uninstall."
+            log_error "Variable $v is empty or unsafe. Aborting uninstall."
         fi
     done
     
@@ -842,7 +919,9 @@ uninstall() {
     fi
 
     log "Starting uninstallation..."
+
     umount_iso || true
+
     local services=(
         "pxe-mount.service"
         "pxe-tftp-on-link.service"
@@ -854,14 +933,15 @@ uninstall() {
     for var in "${services[@]}"; do
         if systemctl is-active --quiet "$var" 2>/dev/null; then
             log "Stopping $var..."
-            systemctl stop "$var" >> "${LOG_FILE}" 2>&1 || warning "Failed to stop $var"
+            systemctl stop "$var" >> "${LOG_FILE}" 2>&1 || log_warn "Failed to stop $var"
         fi
         if systemctl is-enabled --quiet "$var" 2>/dev/null; then
             log "Disabling $var..."
-            systemctl disable "$var" >> "${LOG_FILE}" 2>&1 || warning "Failed to disable $var"
+            systemctl disable "$var" >> "${LOG_FILE}" 2>&1 || log_warn "Failed to disable $var"
         fi
     done
-    rm -f /etc/netplan/02-pxe.yaml* ; netplan apply >> "${LOG_FILE}" 2>&1 || warning "Failed to apply netplan"
+
+    rm -f /etc/netplan/02-pxe.yaml* ; netplan apply >> "${LOG_FILE}" 2>&1 || log_warn "Failed to apply netplan"
     rm -f /etc/dhcp/dhcpd.conf* >> "${LOG_FILE}" 2>&1 
     rm -f /etc/dhcp/dhcpd6.conf* >> "${LOG_FILE}" 2>&1
     rm -f /etc/radvd.conf* >> "${LOG_FILE}" 2>&1
@@ -869,58 +949,61 @@ uninstall() {
     if [[ -d "/usr/local/lib/ipxe" ]]; then rm -rf /usr/local/lib/ipxe/ >> "${LOG_FILE}" 2>&1; fi
     a2dissite pxe_apache.conf 2>&1 | tee -a "${LOG_FILE}"
     rm -f /etc/apache2/sites-available/pxe_apache.conf* >> "${LOG_FILE}" 2>&1
-    a2ensite 000-default.conf 2>&1 | tee -a "${LOG_FILE}" || warning "Failed to enable Apache site 000-default.conf"
-    systemctl daemon-reload 2>&1 | tee -a "${LOG_FILE}" || warning "Failed to reload systemd daemon"
-    systemctl reload apache2 2>&1 | tee -a "${LOG_FILE}" || warning "Failed to reload Apache"
+    a2ensite 000-default.conf 2>&1 | tee -a "${LOG_FILE}" || log_warn "Failed to enable Apache site 000-default.conf"
+    systemctl daemon-reload 2>&1 | tee -a "${LOG_FILE}" || log_warn "Failed to reload systemd daemon"
+    systemctl reload apache2 2>&1 | tee -a "${LOG_FILE}" || log_warn "Failed to reload Apache"
     rm -f /etc/systemd/system/pxe-mount.service >> "${LOG_FILE}" 2>&1
     rm -f /etc/systemd/system/pxe-tftp-on-link.service >> "${LOG_FILE}" 2>&1
     rm -f /etc/networkd-dispatcher/routable.d/start-dhcp-on-link >> "${LOG_FILE}" 2>&1
     if [[ -d ${MAIN_PATH} ]]; then
-        rm -f "${MAIN_PATH}/${PXE_CONFIG_FILE}" 2>&1 | tee -a "${LOG_FILE}" || warning "Failed to remove ${MAIN_PATH}/${PXE_CONFIG_FILE}"
-        rm -rf "${HTTP_PATH}"/* 2>&1 | tee -a "${LOG_FILE}" || warning "Failed to remove ${HTTP_PATH}"
-        rm -rf "${TFTP_PATH}"/* 2>&1 | tee -a "${LOG_FILE}" || warning "Failed to remove ${TFTP_PATH}"
-        rm -rf "${BIN_PATH}"/* 2>&1 | tee -a "${LOG_FILE}" || warning "Failed to remove ${BIN_PATH}"
+        rm -f "${MAIN_PATH}/${PXE_CONFIG_FILE}" 2>&1 | tee -a "${LOG_FILE}" || log_warn "Failed to remove ${MAIN_PATH}/${PXE_CONFIG_FILE}"
+        rm -rf "${HTTP_PATH}"/* 2>&1 | tee -a "${LOG_FILE}" || log_warn "Failed to remove ${HTTP_PATH}"
+        rm -rf "${TFTP_PATH}"/* 2>&1 | tee -a "${LOG_FILE}" || log_warn "Failed to remove ${TFTP_PATH}"
+        rm -rf "${BIN_PATH}"/* 2>&1 | tee -a "${LOG_FILE}" || log_warn "Failed to remove ${BIN_PATH}"
     fi
-    log "Remove PXE server done!"
+
+    log_pass "Remove PXE server done!"
+    log ""
+
     read -r -p "Do you want to reboot now? Y/[N]: " REPLY
     echo
     REPLY="${REPLY:-N}"
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        log "System will reboot in 5 seconds..."
+        log_info "System will reboot in 5 seconds..."
         sleep 5
         reboot
     else
-        log "Please reboot manually to complete the uninstallation."
+        log_info "Please reboot manually to complete the uninstallation."
     fi
 }
 
 usage() {
     cat >&2 <<EOF
-PXE Server Setup Script (${VERSION})
+${PRODUCT_NAME} (${VERSION})
 
 Usage: sudo $0 [OPTIONS]
 
 Options:
-  (NULL)            Install PXE ${VERSION}
-  -h, --help        Show this help message and exit
+  (NULL)                Install PXE ${VERSION}
+  -h, --help            Show this help message and exit
   -r, --remove, --uninstall
-                    Uninstall PXE server and remove all configurations
-  -m, --mount       Only mount ISO files (call pxe_mount_iso.sh)
-  -u, --umount      Only unmount ISO files (call pxe_umount_iso.sh)
-  --no-ipxe-build   Skip iPXE build (use existing binaries)
+                        Uninstall PXE server and remove all configurations
+  -m, --mount           Only mount ISO files (call pxe_mount_iso.sh)
+  -u, --umount          Only unmount ISO files (call pxe_umount_iso.sh)
+  --no-ipxe-build       Skip iPXE build (use existing binaries)
 
 Examples:
-  sudo $0             # Full PXE server installation
-  sudo $0 --uninstall # Remove PXE server and all files
-  sudo $0 --mount     # Only mount ISO files from ISO_PATH
+  sudo $0               # Full PXE server installation
+  sudo $0 --uninstall   # Remove PXE server and all files
+  sudo $0 --mount       # Only mount ISO files from ISO_PATH
 EOF
 }
 
 main() {
-    set_color
-    check_permission
+    check_execution_context
+    cleanup
+    check_os_info
     load_metadata
-    SKIP_IPXE_BUILD=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -929,7 +1012,7 @@ main() {
                 exit 0
                 ;;
             -r|--remove|--uninstall)
-                echo "Do You want to uninstall PXE server?"
+                echo; echo "Do You want to uninstall PXE server?"
                 echo "   [Y] Yes [N] No (Default)"
                 read -r REPLY
                 REPLY="${REPLY:-N}"
@@ -942,13 +1025,11 @@ main() {
                 ;;
             -m|--mount)
                 load_pxe_config
-                validate_config
                 mount_iso
                 exit 0
                 ;;
             -u|--umount)
                 load_pxe_config
-                validate_config
                 umount_iso
                 exit 0
                 ;;
@@ -956,17 +1037,17 @@ main() {
                 SKIP_IPXE_BUILD=true
                 ;;
             *)
-                warning "Invalid input: $1"
+                log_error "Invalid input: $1"
                 usage
                 exit 1
                 ;;
         esac
         shift
     done
-    load_pxe_config
-    validate_config 
 
-    echo "Do you want to install PXE server?"
+    load_pxe_config
+
+    echo; echo "\nDo you want to install PXE server?"
     echo "   [Y] Yes (Default) [N] No "
     read -r REPLY
     REPLY="${REPLY:-Y}"
@@ -974,19 +1055,21 @@ main() {
         echo "Aborting install."
         exit 1
     fi 
+
     log "Starting PXE Server Setup in 3 seconds..."
     sleep 3
-    welcomeinfo  
-    dependency
-    firewall
+
+    show_welcome_info  
+    install_dependency
+    setup_firewall
     setup_dir
     setup_networkmanager
     setup_dhcp
     setup_radvd
     setup_tftp
     [[ "$SKIP_IPXE_BUILD" != true ]] && build_ipxe
-    setup_pxe_files
     setup_apache
+    setup_pxe_files
     create_ipxe_menu
     create_helper_scripts
     setup_services
