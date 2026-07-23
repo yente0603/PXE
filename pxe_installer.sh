@@ -281,15 +281,12 @@ EOF
     chmod 600 /etc/netplan/02-pxe.yaml
     nmcli connection reload || true
     if netplan apply 2>&1 | tee -a "${RUN_LOG_FILE}"; then
-        log "NetworkManager configuration apply successfully for ${PXE_INTERFACE}"
+        log_pass "NetworkManager setup completed. (PXE Bridge: ${PXE_BRIDGE})"
     else
         log_error "Fail to apply netplan configuration."
     fi
-    
     # sleep 3
     # ip addr show "${PXE_BRIDGE}" | grep -E "inet |inet6 |state" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    
-    log_pass "NetworkManager setup completed. (PXE Bridge: ${PXE_BRIDGE})"
 }
 
 setup_dhcp() {
@@ -858,15 +855,14 @@ mount_iso() {
 umount_iso() {
     section "Unmount Existing ISO Files"
 
-    if [[ ! -x "${BIN_PATH}/pxe_umount_iso.sh" ]]; then
-        log_warn "Umount script not found, skipping..."
-        return 0
-    fi
 
     export HTTP_PATH
     export RUN_LOG_FILE
-
-    if "${BIN_PATH}/pxe_umount_iso.sh" 2>&1 | tee -a "${RUN_LOG_FILE}"; then
+    
+    if [[ ! -x "${BIN_PATH}/pxe_umount_iso.sh" ]]; then
+        log_warn "Umount script not found, skipping..."
+    #TODO 檔案必定存在
+    elif "${BIN_PATH}/pxe_umount_iso.sh" 2>&1 | tee -a "${RUN_LOG_FILE}"; then
         log_pass "ISO unmount process completed."
     else
         log_error "ISO unmount failed."
@@ -909,7 +905,7 @@ EOF
     log "  > TFTP Root: ${TFTP_PATH}"
     log "  > HTTP Root: ${HTTP_PATH}"
     log ""
-    log "All Setup Logs Saved to: ${RUN_LOG_FILE}"
+    log "All Setup Logs Saved to: ${RUN_LOG_DIR}"
     log ""
 
     END_TS=$(date +%s)
