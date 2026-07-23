@@ -123,7 +123,7 @@ umount_iso() {
                 fi
             fi
         fi
-    done < <(find "${HTTP_PATH}" -type -depth d)
+    done < <(find "${HTTP_PATH}" -depth -type d)
 
 
     if [[ ${count} -eq 0 ]]; then

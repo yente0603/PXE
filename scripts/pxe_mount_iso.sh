@@ -68,7 +68,7 @@ load_config() {
     CONFIG_FILE="${MAIN_PATH}/pxe.conf"
     # CONFIG_FILE="${CONFIG_FILE:-${MAIN_PATH}/pxe.conf}"
     
-    [[ ! -f "${CONFIG_FILE}" ]] || log_error "Configuration file not found: ${CONFIG_FILE}"
+    [[ -f "${CONFIG_FILE}" ]] || log_error "Configuration file not found: ${CONFIG_FILE}"
 
     # shellcheck disable=SC1090
     source "${CONFIG_FILE}"
@@ -106,7 +106,7 @@ mount_iso() {
     fi
 
     local count=0
-    while IFS= read -r iso; do
+    while IFS=$(read -r iso); do
         ((count+=1))
 
         local rel_path
