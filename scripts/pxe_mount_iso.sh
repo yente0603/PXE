@@ -1,10 +1,15 @@
 #!/bin/bash
 
+# MODE:
+#   0 - Child process           : Uses PXE configuration from the parent script.
+#   1 - Standalone execution    : Loads configuration from pxe.conf.
+
 set -euo pipefail
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 RUN_ID=$(date '+%Y%m%d_%H%M%S')
 RUN_TEMP_LOG="/tmp/pxe_mount_${RUN_ID}.log"
+MODE=0
 
 # If called from pxe_installer.sh, keep existing log file.
 # Otherwise use temporary log first.
@@ -45,6 +50,8 @@ log_error() {
 }
 
 section() {
+    if [[ "${MODE}" -eq 0 ]] && break
+
     CURRENT_SECTION="$*"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}" | sed 's/\x1b\[[0-9;]*m//g' >> "${RUN_LOG_FILE}"
@@ -146,14 +153,14 @@ mount_iso() {
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
-    check_execution_context
-
     # Called by pxe_installer.sh
     if [[ -n "${ISO_PATH:-}" && -n "${HTTP_PATH:-}" ]]; then
         log_info "Using PXE configuration from parent script."
     else
         log_info "Standalone execution detected."
+        check_execution_context
         load_config
+        MODE=1
     fi
     mount_iso
 }
