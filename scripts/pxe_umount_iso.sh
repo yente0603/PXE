@@ -52,7 +52,7 @@ log_error() {
 
 
 section() {
-    if [[ "${MODE}" -ne 0 ]]; then return; fi
+    if [[ "${MODE}" -eq 0 ]]; then return; fi
 
     CURRENT_SECTION="$*"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}"
@@ -117,7 +117,6 @@ umount_iso() {
     while IFS='' read -r mount_point; do
         if mountpoint -q "${mount_point}" 2>/dev/null; then
             ((count+=1))
-            log_info "Unmounting ${mount_point}"
 
             if umount "${mount_point}" 2>/dev/null; then
                 log_pass "Unmounted ${mount_point}"
@@ -136,8 +135,6 @@ umount_iso() {
     if [[ ${count} -eq 0 ]]; then
         log_warn "No mounted ISO found."
     fi
-
-    log_pass "ISO unmount completed."
 }
 
 
@@ -147,10 +144,10 @@ main() {
     if [[ -n "${HTTP_PATH:-}" ]]; then
         log_info "Using PXE configuration from parent script."
     else
+        MODE=1
         log_info "Standalone execution detected."
         check_execution_context
         load_config
-        MODE=1
     fi
     umount_iso
 }

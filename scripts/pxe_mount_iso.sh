@@ -50,7 +50,7 @@ log_error() {
 }
 
 section() {
-    if [[ "${MODE}" -ne 0 ]]; then return; fi
+    if [[ "${MODE}" -eq 0 ]]; then return; fi
 
     CURRENT_SECTION="$*"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}"
@@ -131,7 +131,6 @@ mount_iso() {
             continue
         fi
 
-        log_info "Processing ${filename}"
         mkdir -p "${mount_point}" || log_error "Failed to create mount point: ${mount_point}"
         if mountpoint -q "${mount_point}" 2>/dev/null; then
             log_warn "${filename} already mounted."
@@ -147,8 +146,6 @@ mount_iso() {
     if [[ ${count} -eq 0 ]]; then
         log_warn "No ISO files found."
     fi
-
-    log_pass "ISO mount completed."
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -157,10 +154,10 @@ main() {
     if [[ -n "${ISO_PATH:-}" && -n "${HTTP_PATH:-}" ]]; then
         log_info "Using PXE configuration from parent script."
     else
+        MODE=1
         log_info "Standalone execution detected."
         check_execution_context
         load_config
-        MODE=1
     fi
     mount_iso
 }

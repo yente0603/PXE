@@ -460,7 +460,6 @@ build_ipxe() {
     local ipxe_config="config/general.h"
     # Check ipxe/src/config/general.h enable IPv6
     if grep -q '^[[:space:]]*//\s*#define\s*NET_PROTO_IPV6' "${ipxe_config}"; then
-        log_info "Enabling NET_PROTO_IPV6 in ${ipxe_config}..."
         if sed -i 's|^[[:space:]]*//[[:space:]]*#define[[:space:]]\+NET_PROTO_IPV6|#define NET_PROTO_IPV6|' "${ipxe_config}"; then
             log_info "NET_PROTO_IPV6 enabled successfully."
         else
@@ -472,7 +471,6 @@ build_ipxe() {
 
     # Check ipxe/src/config/general.h enable PING command
     if grep -q '^[[:space:]]*//\s*#define\s*PING_CMD' "${ipxe_config}"; then
-        log_info "Enabling PING_CMD in ${ipxe_config}..."
         if sed -i 's/^[[:space:]]*\/\/#define\s*PING_CMD/#define PING_CMD/' "${ipxe_config}"; then
             log_info "PING_CMD enabled successfully."
         else
@@ -485,7 +483,6 @@ build_ipxe() {
     # Disable autoexec function in script
     ipxe_config="interface/efi/efiprefix.c"
     if grep -q '^[[:space:]]*efi_autoexec_load()' "${ipxe_config}"; then
-        log_info "Disabling efi_autoexec_load() in ${ipxe_config}..."
         if sed -i 's/^[[:space:]]*efi_autoexec_load()/\/\/ &/' "${ipxe_config}"; then
             log_info "efi_autoexec_load() disabled successfully."
         else
@@ -498,11 +495,11 @@ build_ipxe() {
     make distclean >> "${IPXE_BUILD_LOG}" 2>&1 || true
     rm -rf /usr/local/lib/ipxe/ 2>/dev/null || true
 
-    log_info "Build iPXE BIOS version (undionly.kpxe)..."
+    log_info "Build iPXE BIOS version (undionly.kpxe)"
     if ! make bin/undionly.kpxe -j$(nproc) >> "${IPXE_BUILD_LOG}" 2>&1; then
         log_error "Failed to build iPXE BIOS version!"
     fi
-    log_info "Build iPXE UEFI version (ipxe.efi with IPv6 support)..."
+    log_info "Build iPXE UEFI version (ipxe.efi with IPv6 support)"
     if ! make bin-x86_64-efi/ipxe.efi -j$(nproc) >> "${IPXE_BUILD_LOG}" 2>&1; then
         log_error "Failed to build iPXE UEFI version!"
     fi
@@ -512,7 +509,7 @@ build_ipxe() {
     cp "bin-x86_64-efi/ipxe.efi" "/usr/local/lib/ipxe/ipxe-x86.efi"  2>&1 | tee -a "${RUN_LOG_FILE}"
 
     # ==================== V2.2: aarch64 function ====================
-    # log_info "Build iPXE ARM64 UEFI version ..."
+    # log_info "Build iPXE ARM64 UEFI version"
     # if ! make bin-arm64-efi/ipxe.efi -j$(nproc) \
     #     CROSS_COMPILE=aarch64-linux-gnu- >> "${IPXE_BUILD_LOG}" 2>&1; then
     #     log_warn "Failed to build iPXE ARM64 UEFI version!"
@@ -522,7 +519,7 @@ build_ipxe() {
     # Use snp.efi for ARM64 UEFI clients (e.g. Jetson)
     # snp.efi leverages UEFI Simple Network Protocol,
     # which is more compatible than ipxe.efi on ARM platforms.
-    log_info "Build iPXE ARM64 UEFI version ..."
+    log_info "Build iPXE ARM64 UEFI version"
     if ! make bin-arm64-efi/snp.efi -j$(nproc) \
         CROSS_COMPILE=aarch64-linux-gnu- >> "${IPXE_BUILD_LOG}" 2>&1; then
         log_warn "Failed to build iPXE ARM64 UEFI version!"
@@ -576,8 +573,8 @@ setup_pxe_files() {
         fi
         log_pass "WinPE env setup completed."
     else
-        log_warn "WinPE files not found! WinPE env Will not be installed in PXE system."
-        log_warn "Manually copy WinPE related files in ${TFTP_PATH}/winpe and ${HTTP_PATH}/winpe"
+        log_warn "WinPE files not found! WinPE env will not be installed in PXE system."
+        log_warn "Manually copy WinPE related filesw in ${TFTP_PATH}/winpe and ${HTTP_PATH}/winpe"
     fi
     
     # Ghost files for WinPE
@@ -585,7 +582,7 @@ setup_pxe_files() {
         cp -r "${SCRIPT_DIR}"/assets/ghost/* "${HTTP_PATH}/" 2>&1 | tee -a "${RUN_LOG_FILE}"
         log_pass "Ghost in WinPE env setup completed. You can execute Ghost.bat to launch Ghost in WinPE."
     else
-        log_warn "Ghost files not found! Ghost Will not be installed in PXE system."
+        log_warn "Ghost files not found! Ghost will not be installed in PXE system."
         log_warn "Manually install: sudo cp /path/to/you/Ghost/ ${HTTP_PATH}/Ghost"
     fi
 
@@ -873,7 +870,7 @@ EOF
         fi
     done
 
-    log_pass "Services setup completed"
+    log_pass "Services setup completed."
 }
 
 # ─── ISO Functions ───────────────────────────────────────────────────────────
@@ -923,8 +920,9 @@ final_status() {
     Version: ${VERSION}
     OS: ${DISTRO} (${KERNEL})
 
-    Bridge: ${PXE_BRIDGE}
-    Physical Interface: ${PXE_INTERFACE}
+    PXE Network:
+        Bridge: ${PXE_BRIDGE}
+        Interface: ${PXE_INTERFACE}
 EOF
 
     if ip link show "${PXE_BRIDGE}" | grep -q "<.*UP"; then
@@ -981,14 +979,19 @@ EOF
 
     Elapsed Time: ${DURATION}
 ========================================================
+
 EOF
+    log "PXE Server setup completed successfully!"
 }
 
 # ─── Uninstall ───────────────────────────────────────────────────────────
 uninstall() {
+    [[ -f "${MAIN_PATH}/${PXE_CONFIG_FILE}" ]] || \
+    log_error "${MAIN_PATH}/${PXE_CONFIG_FILE} not found."
+    
     # shellcheck disable=SC1091
-    source "${MAIN_PATH}/${PXE_CONFIG_FILE}" || log_error "Failed to load ${MAIN_PATH}/${PXE_CONFIG_FILE}"
-
+    source "${MAIN_PATH}/${PXE_CONFIG_FILE}"
+    
     if [[ ! -f ${MAIN_PATH}/${PXE_CONFIG_FILE} ]]; then
         log_error "${MAIN_PATH}/${PXE_CONFIG_FILE} not found. Cannot determine PXE paths for safe uninstall."
     fi    
@@ -1156,6 +1159,5 @@ main() {
     setup_services
     mount_iso
     final_status
-    log "PXE Server setup completed successfully!"
 }
 main "$@"
