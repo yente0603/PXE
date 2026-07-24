@@ -178,7 +178,6 @@ show_welcome_info() {
     PXE SERVER [IPv6]: ${PXE_SERVER_IPv6}
     Date/Time: $(date)
 ========================================================
-
 EOF
 }
 
@@ -205,7 +204,7 @@ setup_firewall() {
     local status
     status=$(ufw status | head -n1 | cut -d':' -f2- | xargs)
 
-    log_info "Firewall status: ${status}"
+    log_info "Firewall Status: ${status}"
 
     log_warn "Skip firewall setup."
     log_warn "Firewall setup is disabled in this version (${VERSION})."
@@ -400,8 +399,14 @@ interface ${PXE_BRIDGE}
 EOF
     sed 's/^/[radvd] /' /etc/radvd.conf >> "${RUN_LOG_FILE}"
     
-    echo "net.ipv6.conf.all.forwarding=1" > /etc/sysctl.d/99-radvd.conf # Modify sysctl to allow forwarding (although PXE Server typically does not forward, radvd sometimes requires this setting to take effect).
-    sysctl -p /etc/sysctl.d/99-radvd.conf >> "${RUN_LOG_FILE}" 2>&1
+    # Enable IPv6 forwarding for router advertisement environment.
+    # Required in some configurations when using radvd.
+    echo "net.ipv6.conf.all.forwarding=1" > /etc/sysctl.d/99-pxe-ipv6.conf
+    if sysctl --system >> "${RUN_LOG_FILE}" 2>&1; then
+        log_pass "IPv6 forwarding configuration applied."
+    else
+        log_warn "Failed to apply IPv6 forwarding configuration."
+    fi
 
     log_pass "Radvd setup completed."
 }
@@ -439,8 +444,16 @@ build_ipxe() {
     if [ ! -d "ipxe_${IPXE_VERSION}" ]; then
         [ -f "${ipxe_tarball}" ] || log_error "Missing iPXE source archive: ${ipxe_tarball}"
         [ -f "${ipxe_sha256}" ] || log_error "Missing checksum file: ${ipxe_sha256}"
-        sha256sum -c "${ipxe_sha256}" || log_error "SHA256 checksum failed for ${ipxe_tarball}"
-        tar xzf "${ipxe_tarball}" || log_error "Failed to extract ${ipxe_tarball}"
+        if sha256sum -c "${ipxe_sha256}" >> "${RUN_LOG_FILE}" 2>&1; then
+            log_pass "iPXE source checksum verified."
+        else
+            log_error "SHA256 checksum failed for ${ipxe_tarball}"
+        fi
+        if tar xzf "${ipxe_tarball}" >> "${RUN_LOG_FILE}" 2>&1; then
+            log_pass "iPXE source extracted."
+        else
+            log_error "Failed to extract ${ipxe_tarball}"
+        fi
     fi
     cd "${SCRIPT_DIR}/third_party/ipxe_${IPXE_VERSION}/src" || log_error "iPXE source directory not found."
     
@@ -547,7 +560,7 @@ setup_pxe_files() {
     
     # EFI shell files
     if [[ -f "${SCRIPT_DIR}/assets/efi/BOOT/Shellx64.efi" ]]; then
-        cp -r "assets/efi/BOOT/" "${TFTP_PATH}/efi/" 2>&1 | tee -a "${RUN_LOG_FILE}"
+        cp -r "${SCRIPT_DIR}/assets/efi/BOOT/" "${TFTP_PATH}/efi/" 2>&1 | tee -a "${RUN_LOG_FILE}"
         log_pass "EFI Shell setup completed."
     else
         log_warn "EFI shell files not found! EFI shell Will not be installed in PXE system."
@@ -741,13 +754,36 @@ EOF
     sed 's/^/[Apache2] /' /etc/apache2/sites-available/pxe_apache.conf >> "${RUN_LOG_FILE}"
 
     # enable site and modules
-    a2ensite pxe_apache.conf >/dev/null 2>&1
-    a2dissite 000-default.conf >/dev/null 2>&1 || true
-    a2enmod headers >/dev/null 2>&1
+    if a2ensite pxe_apache.conf >> "${RUN_LOG_FILE}" 2>&1; then
+        log_pass "Apache site enabled."
+    else
+        log_error "Failed to enable Apache site."
+    fi
+
+    a2dissite 000-default.conf >> "${RUN_LOG_FILE}" 2>&1 || true
+
+    if a2enmod headers >> "${RUN_LOG_FILE}" 2>&1; then
+        log_pass "Apache headers module enabled."
+    else
+        log_error "Failed to enable Apache headers module."
+    fi
 
     # test apache configuration
-    if apache2ctl configtest 2>&1 | tee -a "${RUN_LOG_FILE}" | grep -q "Syntax OK"; then
-        systemctl reload apache2 >/dev/null 2>&1
+    if apache2ctl configtest >> "${RUN_LOG_FILE}" 2>&1; then
+        if systemctl is-active --quiet apache2; then
+            if systemctl reload apache2 >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Apache configuration reloaded."
+            else
+                log_error "Failed to reload Apache."
+            fi
+        else
+            if systemctl start apache2 >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Apache service started."
+            else
+                log_error "Failed to start Apache."
+            fi
+        fi
+
         log_pass "Apache setup completed."
     else
         log_error "Apache configuration test failed."
@@ -851,7 +887,7 @@ mount_iso() {
         export HTTP_PATH
         export RUN_LOG_FILE
         
-        "${BIN_PATH}/pxe_mount_iso.sh" 2>&1 | tee -a "${RUN_LOG_FILE}"
+        "${BIN_PATH}/pxe_mount_iso.sh" 2>&1 
         
         log_pass "ISO mount process completed."
     else
@@ -864,14 +900,13 @@ mount_iso() {
 umount_iso() {
     section "Unmount Existing ISO Files"
 
-
     export HTTP_PATH
     export RUN_LOG_FILE
     
     if [[ ! -x "${BIN_PATH}/pxe_umount_iso.sh" ]]; then
         log_warn "Umount script not found, skipping..."
     #TODO 檔案必定存在
-    elif "${BIN_PATH}/pxe_umount_iso.sh" 2>&1 | tee -a "${RUN_LOG_FILE}"; then
+    elif "${BIN_PATH}/pxe_umount_iso.sh" 2>&1; then
         log_pass "ISO unmount process completed."
     else
         log_error "ISO unmount failed."
@@ -888,7 +923,6 @@ final_status() {
     Version: ${VERSION}
     OS: ${DISTRO} (${KERNEL})
 
-    PXE Configuration:
     Bridge: ${PXE_BRIDGE}
     Physical Interface: ${PXE_INTERFACE}
 EOF
@@ -908,7 +942,8 @@ EOF
         echo "      Status: DOWN" | tee -a "${RUN_LOG_FILE}"
     fi
 
-    echo "  PXE Services:" | tee -a "${RUN_LOG_FILE}"
+    echo "" | tee -a "${RUN_LOG_FILE}"
+    echo "    PXE Services:" | tee -a "${RUN_LOG_FILE}"
     local services=(pxe-mount.service apache2 NetworkManager-dispatcher)
 
     for var in "${services[@]}"; do

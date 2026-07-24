@@ -50,7 +50,7 @@ log_error() {
 }
 
 section() {
-    if [[ "${MODE}" -eq 0 ]] && break
+    if [[ "${MODE}" -ne 0 ]]; then return; fi
 
     CURRENT_SECTION="$*"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}"
@@ -113,7 +113,7 @@ mount_iso() {
     fi
 
     local count=0
-    while IFS=$(read -r iso); do
+    while IFS='' read -r iso; do
         ((count+=1))
 
         local rel_path

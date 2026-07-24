@@ -52,7 +52,7 @@ log_error() {
 
 
 section() {
-    if [[ "${MODE}" -eq 0 ]] && break
+    if [[ "${MODE}" -ne 0 ]]; then return; fi
 
     CURRENT_SECTION="$*"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}"
@@ -114,7 +114,7 @@ umount_iso() {
     fi
 
     local count=0
-    while IFS= read -r mount_point; do
+    while IFS='' read -r mount_point; do
         if mountpoint -q "${mount_point}" 2>/dev/null; then
             ((count+=1))
             log_info "Unmounting ${mount_point}"
