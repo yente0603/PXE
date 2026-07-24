@@ -14,7 +14,7 @@ IPXE_BUILD_LOG=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MAIN_PATH="/opt/pxe"
-TEMP_CONFIG_PATH="${SCRIPT_DIR}/config/"
+TEMP_CONFIG_PATH="${SCRIPT_DIR}/config"
 #TODO
 PXE_CONFIG_FILE="pxe.conf"
 METADATA_FILE="metadata.env"
@@ -189,7 +189,7 @@ install_dependency() {
     apt install -y isc-dhcp-server tftpd-hpa tftp-hpa apache2 \
         syslinux-common syslinux-efi syslinux git gcc binutils \
         make perl liblzma-dev mtools genisoimage \
-        isolinux tree curl networkd-dispatcher \
+        isolinux tree curl \
         libssl-dev ndisc6 radvd \
         gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
         nfs-kernel-server >> "${APT_LOG}" 2>&1    
@@ -202,7 +202,10 @@ install_dependency() {
 setup_firewall() {
     section "Check Firewall Status"
 
-    ufw status 2>&1 | tee -a "${RUN_LOG_FILE}"
+    local status
+    status=$(ufw status | head -n1 | cut -d':' -f2- | xargs)
+
+    log_info "Firewall status: ${status}"
 
     log_warn "Skip firewall setup."
     log_warn "Firewall setup is disabled in this version (${VERSION})."
@@ -277,8 +280,7 @@ network:
 EOF
     sed 's/^/[NETPLAN] /' "/etc/netplan/02-pxe.yaml" >> "${RUN_LOG_FILE}"
 
-    log "Apply NetworkManager configuration..."
-    chmod 600 /etc/netplan/02-pxe.yaml
+    chmod 600 /etc/netplan/*
     nmcli connection reload || true
     if netplan apply 2>&1 | tee -a "${RUN_LOG_FILE}"; then
         log_pass "NetworkManager setup completed. (PXE Bridge: ${PXE_BRIDGE})"
@@ -480,7 +482,7 @@ build_ipxe() {
         log_info "efi_autoexec_load() is already disabled or not found."
     fi
 
-    make distclean >> "${RUN_LOG_FILE}" 2>&1 || true
+    make distclean >> "${IPXE_BUILD_LOG}" 2>&1 || true
     rm -rf /usr/local/lib/ipxe/ 2>/dev/null || true
 
     log_info "Build iPXE BIOS version (undionly.kpxe)..."
@@ -499,7 +501,7 @@ build_ipxe() {
     # ==================== V2.2: aarch64 function ====================
     # log_info "Build iPXE ARM64 UEFI version ..."
     # if ! make bin-arm64-efi/ipxe.efi -j$(nproc) \
-    #     CROSS_COMPILE=aarch64-linux-gnu- >> "${RUN_LOG_FILE}" 2>&1; then
+    #     CROSS_COMPILE=aarch64-linux-gnu- >> "${IPXE_BUILD_LOG}" 2>&1; then
     #     log_warn "Failed to build iPXE ARM64 UEFI version!"
     # fi
     # cp "bin-arm64-efi/ipxe.efi" "/usr/local/lib/ipxe/ipxe-arm64.efi" 2>&1 | tee -a "${RUN_LOG_FILE}"
@@ -739,16 +741,17 @@ EOF
     sed 's/^/[Apache2] /' /etc/apache2/sites-available/pxe_apache.conf >> "${RUN_LOG_FILE}"
 
     # enable site and modules
-    a2ensite pxe_apache.conf 2>&1 | tee -a "${RUN_LOG_FILE}"
-    a2dissite 000-default.conf 2>/dev/null || true
-    a2enmod headers 2>&1 | tee -a "${RUN_LOG_FILE}"
-    systemctl reload apache2 2>&1 | tee -a "${RUN_LOG_FILE}"
-    systemctl daemon-reload 2>&1 | tee -a "${RUN_LOG_FILE}"
+    a2ensite pxe_apache.conf >/dev/null 2>&1
+    a2dissite 000-default.conf >/dev/null 2>&1 || true
+    a2enmod headers >/dev/null 2>&1
 
     # test apache configuration
-    apache2ctl configtest 2>&1 | tee -a "${RUN_LOG_FILE}"
-
-    log_pass "Apache setup completed."
+    if apache2ctl configtest 2>&1 | tee -a "${RUN_LOG_FILE}" | grep -q "Syntax OK"; then
+        systemctl reload apache2 >/dev/null 2>&1
+        log_pass "Apache setup completed."
+    else
+        log_error "Apache configuration test failed."
+    fi
 }
 
 # ─── Scripts And Systemd Functions ───────────────────────────────────────────────────────────
@@ -773,8 +776,8 @@ setup_services() {
     tee /etc/systemd/system/pxe-mount.service > /dev/null << EOF 
 [Unit]
 Description=PXE ISO Auto Mount Service
-After=network.target apache2.service
-Requires=apache2.service
+After=local-fs.target
+Before=apache2.service
 
 [Service]
 Type=oneshot
@@ -788,39 +791,45 @@ WantedBy=multi-user.target
 EOF
     sed 's/^/[pxe-mount.service] /' /etc/systemd/system/pxe-mount.service >> "${RUN_LOG_FILE}"
 
-    tee /etc/systemd/system/pxe-tftp-on-link.service > /dev/null << EOF 
-[Unit]
-Description=Start TFTP server when PXE Interface link is up
-BindsTo=sys-subsystem-net-devices-${PXE_BRIDGE}.device
-After=sys-subsystem-net-devices-${PXE_BRIDGE}.device network.target
+#     tee /etc/systemd/system/pxe-tftp-on-link.service > /dev/null << EOF 
+# [Unit]
+# Description=Start TFTP server when PXE Interface link is up
+# BindsTo=sys-subsystem-net-devices-${PXE_BRIDGE}.device
+# After=sys-subsystem-net-devices-${PXE_BRIDGE}.device network.target
 
-[Service]
-Type=oneshot
-ExecStart=/bin/systemctl start tftpd-hpa.service
-ExecStop=/bin/systemctl stop tftpd-hpa.service
-RemainAfterExit=yes
+# [Service]
+# Type=oneshot
+# ExecStart=/bin/systemctl start tftpd-hpa.service
+# ExecStop=/bin/systemctl stop tftpd-hpa.service
+# RemainAfterExit=yes
 
-[Install]
-WantedBy=multi-user.target
-EOF
-    sed 's/^/[pxe-tftp-on-link.service] /' /etc/systemd/system/pxe-tftp-on-link.service >> "${RUN_LOG_FILE}"
+# [Install]
+# WantedBy=multi-user.target
+# EOF
+#     sed 's/^/[pxe-tftp-on-link.service] /' /etc/systemd/system/pxe-tftp-on-link.service >> "${RUN_LOG_FILE}"
 
-    tee /etc/networkd-dispatcher/routable.d/start-dhcp-on-link > /dev/null << EOF
+    tee /etc/NetworkManager/dispatcher.d/50-pxe-services > /dev/null << EOF
 #!/bin/bash
-if [ "\$IFACE" = "${PXE_INTERFACE}" ]; then
-    echo "Connection to PXE Interface detected, starting isc-dhcp-server..."
-    systemctl is-active --quiet isc-dhcp-server || systemctl start isc-dhcp-server
-    systemctl is-active --quiet isc-dhcp-server6 || systemctl start isc-dhcp-server6
-    systemctl is-active --quiet radvd || systemctl start radvd
+
+INTERFACE="\$1"
+ACTION="\$2"
+
+if [ "\${INTERFACE}" = "${PXE_INTERFACE}" ] && [ "\${ACTION}" = "up" ]; then
+    echo "Connection to PXE Interface detected, starting PXE services..."
+
+    systemctl is-active --quiet tftpd-hpa.service || systemctl start tftpd-hpa.service
+    systemctl is-active --quiet isc-dhcp-server.service || systemctl start isc-dhcp-server.service
+    systemctl is-active --quiet isc-dhcp-server6.service || systemctl start isc-dhcp-server6.service
+    systemctl is-active --quiet radvd.service || systemctl start radvd.service
 fi
 EOF
-    chmod +x /etc/networkd-dispatcher/routable.d/start-dhcp-on-link
-    sed 's/^/[start-dhcp-on-link] /' /etc/networkd-dispatcher/routable.d/start-dhcp-on-link >> "${RUN_LOG_FILE}"
+    chmod 755 /etc/NetworkManager/dispatcher.d/50-pxe-services
+    sed 's/^/[start-dhcp-on-link] /' /etc/NetworkManager/dispatcher.d/50-pxe-services >> "${RUN_LOG_FILE}"
 
     systemctl daemon-reload 
-    local services=(pxe-mount.service pxe-tftp-on-link.service apache2 tftpd-hpa isc-dhcp-server isc-dhcp-server6 radvd)
+    local services=(pxe-mount.service apache2 NetworkManager-dispatcher)
     for var in "${services[@]}"; do
-        systemctl enable "${var}" 2>&1 | tee -a "${RUN_LOG_FILE}"
+        systemctl enable "${var}" 2>&1 >> "${RUN_LOG_FILE}"
         if ! systemctl start "${var}" 2>&1 | tee -a "${RUN_LOG_FILE}"; then
             log_warn "${var} failed to start"
             log_warn "Please use command below to restart the service when you connect the PXE interface."
@@ -869,55 +878,73 @@ umount_iso() {
     fi
 }
 
-# ─── Final Chcek ───────────────────────────────────────────────────────────
+# ─── Final Check ───────────────────────────────────────────────────────────
 final_status() {
-    log ""
     cat << EOF | tee -a "${RUN_LOG_FILE}"
+
 ========================================================
     ${PRODUCT_NAME} Setup Complete! 
 ========================================================
-EOF
-    log "Build PXE Script Version: ${VERSION}"
-    log "OS: ${DISTRO} (${KERNEL})"
+    Version: ${VERSION}
+    OS: ${DISTRO} (${KERNEL})
 
-    log "Service Status:"
-    local services=(pxe-mount.service pxe-tftp-on-link.service apache2 tftpd-hpa isc-dhcp-server isc-dhcp-server6 radvd)
+    PXE Configuration:
+    Bridge: ${PXE_BRIDGE}
+    Physical Interface: ${PXE_INTERFACE}
+EOF
+
+    if ip link show "${PXE_BRIDGE}" | grep -q "<.*UP"; then
+        echo "      Status: UP" | tee -a "${RUN_LOG_FILE}"
+
+        local ipv4
+        local ipv6
+
+        ipv4=$(ip -4 addr show "${PXE_BRIDGE}" | awk '/inet / {print $2}')
+        ipv6=$(ip -6 addr show "${PXE_BRIDGE}" | awk '/inet6 / && !/scope link/ {print $2}')
+
+        echo "      IPv4: ${ipv4:-N/A}" | tee -a "${RUN_LOG_FILE}"
+        echo "      IPv6: ${ipv6:-N/A}" | tee -a "${RUN_LOG_FILE}"
+    else
+        echo "      Status: DOWN" | tee -a "${RUN_LOG_FILE}"
+    fi
+
+    echo "  PXE Services:" | tee -a "${RUN_LOG_FILE}"
+    local services=(pxe-mount.service apache2 NetworkManager-dispatcher)
+
     for var in "${services[@]}"; do
         if systemctl is-active --quiet "$var"; then
-            log "${var}: active"
+            echo "      ${var}: active" | tee -a "${RUN_LOG_FILE}"
         else
-            log_warn "${var}: failed" 2>&1 | tee -a "${RUN_LOG_FILE}"
-            systemctl status $var 2>&1 | tee -a "${RUN_LOG_FILE}"
+            echo "      ${var}: failed" | tee -a "${RUN_LOG_FILE}"
+            systemctl status "${var}" --no-pager 2>&1 | tee -a "${RUN_LOG_FILE}"
         fi
     done
-    
-    log ""
-    log "Network Configuration: ${PXE_BRIDGE}"
-    ip addr show "${PXE_BRIDGE}" | grep -E "inet |inet6 |state" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    ip addr show "${PXE_INTERFACE}" | grep -E "inet |inet6 |state" 2>&1 | tee -a "${RUN_LOG_FILE}"
 
-    log ""
-    log "Test URLs:"
-    log "  > IPv4 HTTP: http://${PXE_SERVER_IPv4}/"
-    log "  > IPv4 iPXE: http://${PXE_SERVER_IPv4}/ipxe/boot.ipxe"
-    log "  > IPv6 HTTP: http://[${PXE_SERVER_IPv6}]/"
-    log "  > IPv6 iPXE: http://[${PXE_SERVER_IPv6}]/ipxe/boot.ipxe"
-    log "  > TFTP Root: ${TFTP_PATH}"
-    log "  > HTTP Root: ${HTTP_PATH}"
-    log ""
-    log "All Setup Logs Saved to: ${RUN_LOG_DIR}"
-    log ""
+    cat << EOF | tee -a "${RUN_LOG_FILE}"
+
+    Access Information:
+        IPv4 HTTP: http://${PXE_SERVER_IPv4}/
+        IPv4 iPXE: http://${PXE_SERVER_IPv4}/ipxe/boot.ipxe
+        IPv6 HTTP: http://[${PXE_SERVER_IPv6}]/
+        IPv6 iPXE: http://[${PXE_SERVER_IPv6}]/ipxe/boot.ipxe
+        TFTP Root: ${TFTP_PATH}
+        HTTP Root: ${HTTP_PATH}
+
+    All Setup Logs Saved to: ${RUN_LOG_DIR}
+EOF
 
     END_TS=$(date +%s)
     ELAPSED=$((END_TS - RUN_TS))
+
     H=$((ELAPSED / 3600))
     M=$(( (ELAPSED % 3600) / 60 ))
     S=$((ELAPSED % 60))
 
     printf -v DURATION "%02d:%02d:%02d" "$H" "$M" "$S"
-    log "Spend Time: $DURATION"
 
     cat << EOF | tee -a "${RUN_LOG_FILE}" 
+
+    Elapsed Time: ${DURATION}
 ========================================================
 EOF
 }
@@ -946,12 +973,9 @@ uninstall() {
     umount_iso || true
 
     local services=(
-        "pxe-mount.service"
-        "pxe-tftp-on-link.service"
-        "isc-dhcp-server.service"
-        "isc-dhcp-server6.service"
-        "tftpd-hpa.service"
-        "radvd.service"  
+        "pxe-mount.service"  
+        "apache2"
+        "NetworkManager-dispatcher"
     )
     for var in "${services[@]}"; do
         if systemctl is-active --quiet "$var" 2>/dev/null; then
@@ -976,8 +1000,7 @@ uninstall() {
     systemctl daemon-reload 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to reload systemd daemon"
     systemctl reload apache2 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to reload Apache"
     rm -f /etc/systemd/system/pxe-mount.service >> "${RUN_LOG_FILE}" 2>&1
-    rm -f /etc/systemd/system/pxe-tftp-on-link.service >> "${RUN_LOG_FILE}" 2>&1
-    rm -f /etc/networkd-dispatcher/routable.d/start-dhcp-on-link >> "${RUN_LOG_FILE}" 2>&1
+    rm -f /etc/NetworkManager/dispatcher.d/50-pxe-services >> "${RUN_LOG_FILE}" 2>&1
     if [[ -d ${MAIN_PATH} ]]; then
         rm -f "${MAIN_PATH}/${PXE_CONFIG_FILE}" 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to remove ${MAIN_PATH}/${PXE_CONFIG_FILE}"
         rm -rf "${HTTP_PATH}"/* 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to remove ${HTTP_PATH}"
@@ -1070,7 +1093,7 @@ main() {
 
     load_pxe_config
 
-    echo; echo "\nDo you want to install PXE server?"
+    echo; echo "Do you want to install PXE server?"
     echo "   [Y] Yes (Default) [N] No "
     read -r REPLY
     REPLY="${REPLY:-Y}"
