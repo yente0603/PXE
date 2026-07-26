@@ -15,35 +15,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MAIN_PATH="/opt/pxe"
 TEMP_CONFIG_PATH="${SCRIPT_DIR}/config"
-#TODO
+INSTALLED_CONFIG_PATH="${MAIN_PATH}/config"
+
 PXE_CONFIG_FILE="pxe.conf"
 METADATA_FILE="metadata.env"
+MANAGED_FILES_SOURCE="${TEMP_CONFIG_PATH}/managed_files.list"
 DEFAULT_PXE_CONFIG="${TEMP_CONFIG_PATH}/pxe.conf"
-EXAMPLE_PXE_CONFIG="${TEMP_CONFIG_PATH}/pxe.conf.example"
+# Reserved for future feature:
+# EXAMPLE_PXE_CONFIG="${TEMP_CONFIG_PATH}/pxe.conf.example"
 
+
+ACTION=""
+# Reserved for future feature:
+# RUN_MODE="repository" # interactive, run-package
 #TODO
 # 由 .run 的啟動 wrapper 設為 1, TODO
 # PXE_RUN_MODE="${PXE_RUN_MODE:-0}"
 CONFIG_FILE=""
 ACTIVE_CONFIG_FILE=""
-GENERATED_CONFIG_FILE=""
 
 SKIP_IPXE_BUILD=false
+
+# Reserved for future feature:
+# GENERATED_CONFIG_FILE=""
 
 # ─── Output helpers ───────────────────────────────────────────────────────────
 RED='\033[1;31m'; GREEN='\033[1;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
-CURRENT_SECTION=""
 
-cleanup() {
-    if [[ -n "${GENERATED_CONFIG_FILE:-}" && -f "${GENERATED_CONFIG_FILE}" ]]; then
-        rm -f "${GENERATED_CONFIG_FILE}"
-    fi
-}
-trap cleanup EXIT
+# Reserved for future feature:
+# cleanup() {
+#     if [[ -n "${GENERATED_CONFIG_FILE:-}" && -f "${GENERATED_CONFIG_FILE}" ]]; then
+#         rm -f "${GENERATED_CONFIG_FILE}"
+#     fi
+# }
+# trap cleanup EXIT
 
 log() {
     local message="$1"
+    local timestamp 
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo -e "[${timestamp}] ${message}"
     echo -e "[${timestamp}] ${message}" | sed 's/\x1b\[[0-9;]*m//g' >> "${RUN_LOG_FILE}"
@@ -67,7 +77,6 @@ log_error() {
 }
 
 section() {
-    CURRENT_SECTION="$*"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}" | sed 's/\x1b\[[0-9;]*m//g' >> "${RUN_LOG_FILE}"
 }
@@ -76,7 +85,8 @@ section() {
 check_execution_context() {
     section "Execution Context Check"
 
-    local script_name=$(basename "$0")
+    local script_name
+    script_name=$(basename "$0")
     
     [[ $EUID -eq 0 ]] || \
         log_error "This script must be run with sudo. Usage: sudo ./${script_name} [OPTIONS]"
@@ -123,12 +133,20 @@ check_os_info(){
 load_metadata() {
     section "Load Metadata"
 
-    local metadata_file="${TEMP_CONFIG_PATH}/metadata.env"
+    local repository_metadata="${TEMP_CONFIG_PATH}/${METADATA_FILE}"
+    local installed_metadata="${INSTALLED_CONFIG_PATH}/${METADATA_FILE}"
+    local metadata_file=""
+
+    if [[ -f "${repository_metadata}" ]]; then
+        metadata_file="${repository_metadata}"
+    elif [[ -f "${installed_metadata}" ]]; then
+        metadata_file="${installed_metadata}"
+    else
+        log_error \
+            "Metadata file not found: ${repository_metadata} or ${installed_metadata}"
+    fi
     
-    [[ -f "${metadata_file}" ]] || \
-        log_error "Metadata file not found: ${metadata_file}"
-    
-    # shellcheck disable=SC1090
+    # shellcheck source=config/metadata.env
     source "${metadata_file}"
     log_pass "Metadata load completed."
 }
@@ -136,16 +154,44 @@ load_metadata() {
 load_pxe_config() {
     section "Load PXE Config"
 
-    local config_file="${TEMP_CONFIG_PATH}/${PXE_CONFIG_FILE}"
-    
-    [[ -f "$config_file" ]] || \
-        log_error "Configuration file '$config_file' not found."
-    
-    # shellcheck disable=SC1090
-    source "$config_file"
+     case "${ACTION}" in
+        install)
+            ACTIVE_CONFIG_FILE="${CONFIG_FILE:-${DEFAULT_PXE_CONFIG}}"
+            ;;
+
+        uninstall|mount|umount)
+            ACTIVE_CONFIG_FILE="${INSTALLED_CONFIG_PATH}/${PXE_CONFIG_FILE}"
+            ;;
+
+        *)
+            log_error "PXE configuration is not required for action: ${ACTION}"
+            ;;
+    esac
+
+    [[ -f "${ACTIVE_CONFIG_FILE}" ]] || \
+        log_error "Configuration file not found: ${ACTIVE_CONFIG_FILE}"
+
+    # The runtime config has the same schema as pxe.conf.example.
+    # shellcheck source=config/pxe.conf.example
+    source "${ACTIVE_CONFIG_FILE}"
 
     RUN_LOG_DIR="${LOG_PATH}/pxe_manager_${RUN_ID}"
-    RUN_LOG_FILE="${RUN_LOG_DIR}/installer.log"
+
+    case "${ACTION}" in
+        install)
+            RUN_LOG_FILE="${RUN_LOG_DIR}/installer.log"
+            ;;
+        uninstall)
+            RUN_LOG_FILE="${RUN_LOG_DIR}/uninstall.log"
+            ;;
+        mount)
+            RUN_LOG_FILE="${RUN_LOG_DIR}/mount_iso.log"
+            ;;
+        umount)
+            RUN_LOG_FILE="${RUN_LOG_DIR}/umount_iso.log"
+            ;;
+    esac
+
     APT_LOG="${RUN_LOG_DIR}/apt.log"
     IPXE_BUILD_LOG="${RUN_LOG_DIR}/ipxe_build.log"
 
@@ -155,7 +201,8 @@ load_pxe_config() {
         rm -f "${RUN_TEMP_LOG}"
     fi
     
-    log_pass "PXE config load completed. Logs save to: ${RUN_LOG_FILE}"
+    log_pass "PXE config loaded from: ${ACTIVE_CONFIG_FILE}"
+    log_pass "Logs save to: ${RUN_LOG_FILE}"
 }
 
 # ─── Main Functions ───────────────────────────────────────────────────────────
@@ -192,23 +239,148 @@ install_dependency() {
         libssl-dev ndisc6 radvd \
         gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
         nfs-kernel-server >> "${APT_LOG}" 2>&1    
-    apt remove -y ipxe >> "${APT_LOG}" 2>&1 || true
-    apt autoremove -y > /dev/null 2>&1
 
     log_pass "Dependency install completed."
+}
+
+backup_original_state() {
+    section "Back Up Original System State"
+
+    local state_manifest="${STATE_PATH}/managed_files.list"
+    local target
+    local relative_path
+    local backup_path
+    local absent_marker
+    local service
+
+    # Reinstallation must not overwrite the first installation state.
+    if [[ -f "${STATE_PATH}/recorded" ]]; then
+        log_info "Original system state is already recorded. Skip."
+        return 0
+    fi
+    [[ -f "${MANAGED_FILES_SOURCE}" ]] || log_error "Managed files list not found: ${MANAGED_FILES_SOURCE}"
+
+    mkdir -p \
+        "${STATE_PATH}/original" \
+        "${STATE_PATH}/absent" \
+        "${STATE_PATH}/apache" \
+        "${STATE_PATH}/services"
+    chmod 700 "${STATE_PATH}"
+
+    # Save the exact file list used by this installation.
+    [[ ! -f "${state_manifest}" ]] && install -m 600 "${MANAGED_FILES_SOURCE}" "${state_manifest}"
+    
+    while IFS='' read -r target || [[ -n "${target}" ]]; do
+        # Ignore empty lines and comments.
+        [[ -z "${target}" ]] && continue
+        [[ "${target}" =~ ^[[:space:]]*# ]] && continue
+
+        # Only allow absolute paths.
+        [[ "${target}" == /* ]] || \
+            log_error "Invalid managed file path: ${target}"
+
+        relative_path="${target#/}"
+        backup_path="${STATE_PATH}/original/${relative_path}"
+        absent_marker="${STATE_PATH}/absent/${relative_path}"
+
+        # Preserve completed entries if a previous backup was interrupted.
+        if [[ -e "${backup_path}" ||
+              -L "${backup_path}" ||
+              -e "${absent_marker}" ]]; then
+            continue
+        fi
+
+        if [[ -e "${target}" || -L "${target}" ]]; then
+            mkdir -p "$(dirname "${backup_path}")"
+
+            cp -a -- "${target}" "${backup_path}" || \
+                log_error "Failed to back up: ${target}"
+
+            log_pass "Backed up: ${target}"
+        else
+            mkdir -p "$(dirname "${absent_marker}")"
+            : > "${absent_marker}"
+
+            log_info "Originally absent: ${target}"
+        fi
+    done < "${state_manifest}"
+
+    # Record Apache default site state.
+    if [[ -e "/etc/apache2/sites-enabled/000-default.conf" ]]; then
+        printf '%s\n' "enabled" \
+            > "${STATE_PATH}/apache/default-site"
+    else
+        printf '%s\n' "disabled" \
+            > "${STATE_PATH}/apache/default-site"
+    fi
+
+    # Record PXE Apache site state in case the same site existed previously.
+    if [[ -e "/etc/apache2/sites-enabled/pxe_apache.conf" ]]; then
+        printf '%s\n' "enabled" \
+            > "${STATE_PATH}/apache/pxe-site"
+    else
+        printf '%s\n' "disabled" \
+            > "${STATE_PATH}/apache/pxe-site"
+    fi
+
+    # Record Apache headers module state.
+    if [[ -e "/etc/apache2/mods-enabled/headers.load" ]]; then
+        printf '%s\n' "enabled" \
+            > "${STATE_PATH}/apache/headers-module"
+    else
+        printf '%s\n' "disabled" \
+            > "${STATE_PATH}/apache/headers-module"
+    fi
+
+    # These services may be started by the installation.
+    local tracked_services=(
+        "apache2.service"
+        "isc-dhcp-server.service"
+        "isc-dhcp-server6.service"
+        "tftpd-hpa.service"
+        "radvd.service"
+        "pxe-mount.service"
+    )
+
+    for service in "${tracked_services[@]}"; do
+        if systemctl is-active --quiet "${service}" 2>/dev/null; then
+            printf '%s\n' "active" \
+                > "${STATE_PATH}/services/${service}.active"
+        else
+            printf '%s\n' "inactive" \
+                > "${STATE_PATH}/services/${service}.active"
+        fi
+    done
+
+    # Only pxe-mount.service is explicitly enabled by this project.
+    if systemctl is-enabled --quiet pxe-mount.service 2>/dev/null; then
+        printf '%s\n' "enabled" \
+            > "${STATE_PATH}/services/pxe-mount.service.enabled"
+    else
+        printf '%s\n' "disabled" \
+            > "${STATE_PATH}/services/pxe-mount.service.enabled"
+    fi
+
+    : > "${STATE_PATH}/recorded"
+    chmod -R go-rwx "${STATE_PATH}"
+
+    log_pass "Original system state recorded in: ${STATE_PATH}"
 }
 
 setup_firewall() {
     section "Check Firewall Status"
 
-    local status
-    status=$(ufw status | head -n1 | cut -d':' -f2- | xargs)
+    local status=""
 
-    log_info "Firewall Status: ${status}"
-
-    log_warn "Skip firewall setup."
-    log_warn "Firewall setup is disabled in this version (${VERSION})."
-    log_warn "Make sure this server is in a trusted network environment."
+    if command -v ufw >/dev/null 2>&1; then
+        status="$(ufw status | head -n1 | cut -d':' -f2- | xargs)"
+        log_info "Firewall Status: ${status}"
+        log_warn "Skip firewall setup."
+        log_warn "Firewall setup is disabled in this version (${VERSION})."
+        log_warn "Make sure this server is in a trusted network environment."
+    else
+        log_warn "UFW is not installed."
+    fi
 
     # log "Setup Firewall..."
     # ========================================================
@@ -236,6 +408,7 @@ setup_dir() {
     section "Setup Essential Directory"
 
     local dirs=(
+        "${INSTALLED_CONFIG_PATH}"
         "${HTTP_PATH}"
         "${TFTP_PATH}"/{ipxe,efi,bios}
         "${BIN_PATH}"
@@ -247,14 +420,19 @@ setup_dir() {
     done
 }
 
+setup_config() {
+    section "Setup Essential Config"
+
+    install -m 600 "${ACTIVE_CONFIG_FILE}" "${INSTALLED_CONFIG_PATH}/${PXE_CONFIG_FILE}"
+    install -m 644 "${TEMP_CONFIG_PATH}/${METADATA_FILE}" "${INSTALLED_CONFIG_PATH}/${METADATA_FILE}"
+    install -m 755 "${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")" "${MAIN_PATH}/pxe_installer.sh"
+
+    log_pass "Essential files setup completed."
+}
+
 # ─── Network Functions ───────────────────────────────────────────────────────────
 setup_networkmanager() {
     section "Setup Static IPv4 and IPv6 Configuration"
-    
-    if [[ -f "/etc/netplan/02-pxe.yaml" ]]; then
-        log_warn "Back up existing netplan."
-        cp "/etc/netplan/02-pxe.yaml" "/etc/netplan/02-pxe.yaml.backup.${RUN_ID}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    fi
     
     tee /etc/netplan/02-pxe.yaml > /dev/null << EOF
 network:
@@ -279,28 +457,17 @@ network:
 EOF
     sed 's/^/[NETPLAN] /' "/etc/netplan/02-pxe.yaml" >> "${RUN_LOG_FILE}"
 
-    chmod 600 /etc/netplan/*
+    chmod 600 /etc/netplan/02-pxe.yaml
     nmcli connection reload || true
     if netplan apply 2>&1 | tee -a "${RUN_LOG_FILE}"; then
         log_pass "NetworkManager setup completed. (PXE Bridge: ${PXE_BRIDGE})"
     else
         log_error "Fail to apply netplan configuration."
     fi
-    # sleep 3
-    # ip addr show "${PXE_BRIDGE}" | grep -E "inet |inet6 |state" 2>&1 | tee -a "${RUN_LOG_FILE}"
 }
 
 setup_dhcp() {
     section "Setup DHCP Server"
-
-    if [[ -f "/etc/dhcp/dhcpd.conf" ]]; then
-        log_warn "Back up existing dhcp configuration."
-        cp "/etc/dhcp/dhcpd.conf" "/etc/dhcp/dhcpd.conf.backup.${RUN_ID}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    fi
-    if [[ -f "/etc/dhcp/dhcpd6.conf" ]]; then
-        log_warn "Back up existing dhcp6 configuration."
-        cp "/etc/dhcp/dhcpd6.conf" "/etc/dhcp/dhcpd6.conf.backup.${RUN_ID}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    fi
 
     tee /etc/dhcp/dhcpd.conf > /dev/null << EOF
 # DHCPv4 Configuration
@@ -375,11 +542,6 @@ EOF
 setup_radvd() {
     section "Setup Router Advertisement Daemon (radvd)"
 
-    if [[ -f "/etc/radvd.conf" ]]; then
-        log_warn "Back up existing radvd configuration."
-        cp "/etc/radvd.conf" "/etc/radvd.conf.backup.${RUN_ID}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    fi
-
     tee /etc/radvd.conf > /dev/null << EOF
 interface ${PXE_BRIDGE}
 {
@@ -414,12 +576,7 @@ EOF
 # ─── TFTP Functions ───────────────────────────────────────────────────────────
 setup_tftp() {
     section "Setup TFTP Server"
-
-    if [[ -f "/etc/default/tftpd-hpa" ]]; then
-        log_warn "Back up existing tftp configuration."
-        cp "/etc/default/tftpd-hpa" "/etc/default/tftpd-hpa.backup.${RUN_ID}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    fi
-    
+ 
     tee /etc/default/tftpd-hpa > /dev/null << EOF
 TFTP_USERNAME="tftp"
 TFTP_DIRECTORY="${TFTP_PATH}"
@@ -435,7 +592,8 @@ EOF
 build_ipxe() {
     section "Build iPXE from Local Source Code (v1.21.1)"
 
-    local original_dir=$(pwd)
+    local original_dir
+    original_dir=$(pwd)
     local ipxe_tarball="ipxe_${IPXE_VERSION}.tgz"
     local ipxe_sha256="ipxe_${IPXE_VERSION}.tgz.sha256"
 
@@ -493,14 +651,14 @@ build_ipxe() {
     fi
 
     make distclean >> "${IPXE_BUILD_LOG}" 2>&1 || true
-    rm -rf /usr/local/lib/ipxe/ 2>/dev/null || true
+    # rm -rf /usr/local/lib/ipxe/ 2>/dev/null || true
 
     log_info "Build iPXE BIOS version (undionly.kpxe)"
-    if ! make bin/undionly.kpxe -j$(nproc) >> "${IPXE_BUILD_LOG}" 2>&1; then
+    if ! make bin/undionly.kpxe -j"$(nproc)" >> "${IPXE_BUILD_LOG}" 2>&1; then
         log_error "Failed to build iPXE BIOS version!"
     fi
     log_info "Build iPXE UEFI version (ipxe.efi with IPv6 support)"
-    if ! make bin-x86_64-efi/ipxe.efi -j$(nproc) >> "${IPXE_BUILD_LOG}" 2>&1; then
+    if ! make bin-x86_64-efi/ipxe.efi -j"$(nproc)" >> "${IPXE_BUILD_LOG}" 2>&1; then
         log_error "Failed to build iPXE UEFI version!"
     fi
    
@@ -510,7 +668,7 @@ build_ipxe() {
 
     # ==================== V2.2: aarch64 function ====================
     # log_info "Build iPXE ARM64 UEFI version"
-    # if ! make bin-arm64-efi/ipxe.efi -j$(nproc) \
+    # if ! make bin-arm64-efi/ipxe.efi -j"$(nproc)" \
     #     CROSS_COMPILE=aarch64-linux-gnu- >> "${IPXE_BUILD_LOG}" 2>&1; then
     #     log_warn "Failed to build iPXE ARM64 UEFI version!"
     # fi
@@ -520,9 +678,9 @@ build_ipxe() {
     # snp.efi leverages UEFI Simple Network Protocol,
     # which is more compatible than ipxe.efi on ARM platforms.
     log_info "Build iPXE ARM64 UEFI version"
-    if ! make bin-arm64-efi/snp.efi -j$(nproc) \
+    if ! make bin-arm64-efi/snp.efi -j"$(nproc)" \
         CROSS_COMPILE=aarch64-linux-gnu- >> "${IPXE_BUILD_LOG}" 2>&1; then
-        log_warn "Failed to build iPXE ARM64 UEFI version!"
+        log_error "Failed to build iPXE ARM64 UEFI version!"
     fi
     cp "bin-arm64-efi/snp.efi" "/usr/local/lib/ipxe/snp-arm64.efi" 2>&1 | tee -a "${RUN_LOG_FILE}"
     # ===============================================================
@@ -535,11 +693,19 @@ build_ipxe() {
 setup_pxe_files() {
     section "Setup PXE Files"
     
-    # config
-    cp "${TEMP_CONFIG_PATH}/${PXE_CONFIG_FILE}" "${MAIN_PATH}/" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    cp "${TEMP_CONFIG_PATH}/${METADATA_FILE}" "${MAIN_PATH}/" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    log_pass "Config files copy completed."
-    
+
+    local required_ipxe_files=(
+        "/usr/local/lib/ipxe/undionly-legacy.kpxe"
+        "/usr/local/lib/ipxe/ipxe-x86.efi"
+        "/usr/local/lib/ipxe/snp-arm64.efi"
+    )
+    local file
+
+    for file in "${required_ipxe_files[@]}"; do
+        [[ -f "${file}" ]] || \
+            log_error "Required iPXE binary not found: ${file}"
+    done
+
     # iPXE binary files (x86)
     cp "/usr/local/lib/ipxe/undionly-legacy.kpxe" "${TFTP_PATH}/ipxe/" 2>&1 | tee -a "${RUN_LOG_FILE}"
     cp "/usr/local/lib/ipxe/ipxe-x86.efi" "${TFTP_PATH}/ipxe/" 2>&1 | tee -a "${RUN_LOG_FILE}"
@@ -566,15 +732,15 @@ setup_pxe_files() {
     
     # WinPE files
     if [[ -f "${SCRIPT_DIR}/assets/winpe/tftp/winpe/wimboot" ]]; then
-        cp -r "assets/winpe/tftp/winpe" "${TFTP_PATH}/" 2>&1 | tee -a "${RUN_LOG_FILE}"
-        cp -r "assets/winpe/http/winpe" "${HTTP_PATH}/" 2>&1 | tee -a "${RUN_LOG_FILE}"
-        if grep -Eq "<IP>|<SMB_MOUNT_POINT\?>" ${HTTP_PATH}/winpe/startup.bat; then
+        cp -r "${SCRIPT_DIR}/assets/winpe/tftp/winpe" "${TFTP_PATH}/" 2>&1 | tee -a "${RUN_LOG_FILE}"
+        cp -r "${SCRIPT_DIR}/assets/winpe/http/winpe" "${HTTP_PATH}/" 2>&1 | tee -a "${RUN_LOG_FILE}"
+        if grep -Eq "<IP>|<SMB_MOUNT_POINT\?>" "${HTTP_PATH}/winpe/startup.bat"; then
             log_warn "You should modify ${HTTP_PATH}/winpe/startup.bat to mount your SMB server; otherwise, WinPE may break"
         fi
         log_pass "WinPE env setup completed."
     else
         log_warn "WinPE files not found! WinPE env will not be installed in PXE system."
-        log_warn "Manually copy WinPE related filesw in ${TFTP_PATH}/winpe and ${HTTP_PATH}/winpe"
+        log_warn "Manually copy WinPE related files in ${TFTP_PATH}/winpe and ${HTTP_PATH}/winpe"
     fi
     
     # Ghost files for WinPE
@@ -586,16 +752,15 @@ setup_pxe_files() {
         log_warn "Manually install: sudo cp /path/to/you/Ghost/ ${HTTP_PATH}/Ghost"
     fi
 
+    chown tftp:tftp "${TFTP_PATH}"
+    chown www-data:www-data "${HTTP_PATH}"
 
-    if [[ -f "${BIN_PATH}/pxe_umount_iso.sh" ]]; then 
-        log_warn "Remove already mounted iso first."
-        "${BIN_PATH}/pxe_umount_iso.sh" >> "${RUN_LOG_FILE}" 2>&1
-    fi
-
-    chown -R tftp:tftp "${TFTP_PATH}"
-    chown -R www-data:www-data "${HTTP_PATH}"
-    chmod -R 755 "${MAIN_PATH}"
-
+    chmod 755 "${MAIN_PATH}"
+    chmod 755 "${HTTP_PATH}" "${TFTP_PATH}" "${BIN_PATH}" "${INSTALLED_CONFIG_PATH}"
+    chmod 600 "${INSTALLED_CONFIG_PATH}/${PXE_CONFIG_FILE}"
+    chmod 644 "${INSTALLED_CONFIG_PATH}/${METADATA_FILE}"
+    [[ -d "${STATE_PATH}" ]] && chmod -R go-rwx "${STATE_PATH}"
+    
     log_pass "PXE files setup completed."
 }
 
@@ -605,7 +770,7 @@ create_ipxe_menu() {
 
     section "Setup PXE Boot Menu"
     
-    tee ${TFTP_PATH}/ipxe/boot.ipxe > /dev/null << EOF
+    tee "${TFTP_PATH}/ipxe/boot.ipxe" > /dev/null << EOF
 #!ipxe
 ifconf -c dhcp && goto netv4 || ifconf -c ipv6 && goto netv6 || goto dhcperror
 
@@ -707,9 +872,9 @@ reboot
 exit
 EOF
 
-    chown tftp:tftp ${TFTP_PATH}/ipxe/boot.ipxe
-    chmod 755 ${TFTP_PATH}/ipxe/boot.ipxe
-    sed 's/^/[iPXE Menu] /' ${TFTP_PATH}/ipxe/boot.ipxe >> "${RUN_LOG_FILE}"
+    chown tftp:tftp "${TFTP_PATH}/ipxe/boot.ipxe"
+    chmod 755 "${TFTP_PATH}/ipxe/boot.ipxe"
+    sed 's/^/[iPXE Menu] /' "${TFTP_PATH}/ipxe/boot.ipxe" >> "${RUN_LOG_FILE}"
 
     log_pass "PXE menu setup completed."
 }
@@ -717,11 +882,6 @@ EOF
 # ─── Apache Functions ───────────────────────────────────────────────────────────
 setup_apache() {
     section "Setup Apache Web Server"
-    
-    if [[ -f "/etc/apache2/sites-available/pxe_apache.conf" ]]; then
-        log_warn "Back up existing apache configuration."
-        cp "/etc/apache2/sites-available/pxe_apache.conf" "/etc/apache2/sites-available/pxe_apache.conf.backup.${RUN_ID}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    fi
     
     tee /etc/apache2/sites-available/pxe_apache.conf > /dev/null << EOF
 <VirtualHost *:80 [::]:80>
@@ -791,7 +951,7 @@ EOF
 create_helper_scripts() {
     section "Setup Scripts"
 
-    cp "${SCRIPT_DIR}"/scripts/* ${BIN_PATH} 2>&1 | tee -a "${RUN_LOG_FILE}"
+    cp "${SCRIPT_DIR}"/scripts/* "${BIN_PATH}" 2>&1 | tee -a "${RUN_LOG_FILE}"
     chmod +x "${BIN_PATH}"/*.sh 2>&1 | tee -a "${RUN_LOG_FILE}"
 
     log_pass "Scripts setup completed."
@@ -799,11 +959,6 @@ create_helper_scripts() {
 
 setup_services() {
     section "Setup Systemd Services"
-    
-    # log "Force cleanup old masked unit if exists..."
-    # rm -f /etc/systemd/system/pxe-mount.service
-    # rm -f /etc/systemd/system/pxe-tftp-on-link.service
-    # systemctl unmask pxe-mount.service pxe-tftp-on-link.service >> "${RUN_LOG_FILE}" 2>&1 || true
 
     # auto-mount service when boot up
     tee /etc/systemd/system/pxe-mount.service > /dev/null << EOF 
@@ -824,23 +979,7 @@ WantedBy=multi-user.target
 EOF
     sed 's/^/[pxe-mount.service] /' /etc/systemd/system/pxe-mount.service >> "${RUN_LOG_FILE}"
 
-#     tee /etc/systemd/system/pxe-tftp-on-link.service > /dev/null << EOF 
-# [Unit]
-# Description=Start TFTP server when PXE Interface link is up
-# BindsTo=sys-subsystem-net-devices-${PXE_BRIDGE}.device
-# After=sys-subsystem-net-devices-${PXE_BRIDGE}.device network.target
-
-# [Service]
-# Type=oneshot
-# ExecStart=/bin/systemctl start tftpd-hpa.service
-# ExecStop=/bin/systemctl stop tftpd-hpa.service
-# RemainAfterExit=yes
-
-# [Install]
-# WantedBy=multi-user.target
-# EOF
-#     sed 's/^/[pxe-tftp-on-link.service] /' /etc/systemd/system/pxe-tftp-on-link.service >> "${RUN_LOG_FILE}"
-
+    mkdir -p /etc/NetworkManager/dispatcher.d
     tee /etc/NetworkManager/dispatcher.d/50-pxe-services > /dev/null << EOF
 #!/bin/bash
 
@@ -859,54 +998,67 @@ EOF
     chmod 755 /etc/NetworkManager/dispatcher.d/50-pxe-services
     sed 's/^/[start-dhcp-on-link] /' /etc/NetworkManager/dispatcher.d/50-pxe-services >> "${RUN_LOG_FILE}"
 
-    systemctl daemon-reload 
-    local services=(pxe-mount.service apache2 NetworkManager-dispatcher)
-    for var in "${services[@]}"; do
-        systemctl enable "${var}" 2>&1 >> "${RUN_LOG_FILE}"
-        if ! systemctl start "${var}" 2>&1 | tee -a "${RUN_LOG_FILE}"; then
-            log_warn "${var} failed to start"
-            log_warn "Please use command below to restart the service when you connect the PXE interface."
-            log_warn "   $ sudo systemctl restart ${var}"
+    if systemctl daemon-reload >> "${RUN_LOG_FILE}" 2>&1; then
+        log_pass "Reloaded systemd configuration."
+    else
+        log_error "Failed to reload systemd configuration."
+    fi
+
+    # Only enable the project-created service.
+    if systemctl enable pxe-mount.service >> "${RUN_LOG_FILE}" 2>&1; then
+        log_pass "Enabled pxe-mount.service."
+    else
+        log_error "Failed to enable pxe-mount.service."
+    fi
+
+    # Start PXE services immediately.
+    # Dispatcher will handle future interface-up events.
+    local pxe_services=(
+        "tftpd-hpa.service"
+        "isc-dhcp-server.service"
+        "isc-dhcp-server6.service"
+        "radvd.service"
+    )
+    local service
+    for service in "${pxe_services[@]}"; do
+        if systemctl restart "${service}" >> "${RUN_LOG_FILE}" 2>&1; then
+            log_pass "Started ${service}."
+        else
+            log_warn "${service} failed to start."
+            log_warn "The PXE interface may not be ready."
         fi
     done
 
-    log_pass "Services setup completed."
+    log_pass "Systemd services setup completed."
 }
 
 # ─── ISO Functions ───────────────────────────────────────────────────────────
 mount_iso() {
     section "Mount Existing ISO Files"
     
-    # if [ -d "${ISO_PATH}" ] && [ "$(ls -A ${ISO_PATH}/*.iso 2>/dev/null)" ]; then
-    if compgen -G "${ISO_PATH}/*.iso" > /dev/null; then
-
-        export ISO_PATH
-        export HTTP_PATH
-        export RUN_LOG_FILE
-        
-        "${BIN_PATH}/pxe_mount_iso.sh" 2>&1 
-        
-        log_pass "ISO mount process completed."
+    if [[ ! -x "${BIN_PATH}/pxe_mount_iso.sh" ]]; then
+        log_warn "Mount script not found, skipping..."
+    elif ISO_PATH="${ISO_PATH}" \
+        HTTP_PATH="${HTTP_PATH}" \
+        RUN_LOG_FILE="${RUN_LOG_FILE}" \
+        "${BIN_PATH}/pxe_mount_iso.sh"; then      
+            log_pass "ISO mount process completed."
     else
-        log_warn "No ISO files found in ${ISO_PATH}"
-        log_warn "Please add your ISO files in ${ISO_PATH} and execute following command:"
-        log_warn "  sudo ${BIN_PATH}/pxe_mount_iso.sh"
+        log_warn "ISO mount failed"
     fi
 }
 
 umount_iso() {
     section "Unmount Existing ISO Files"
-
-    export HTTP_PATH
-    export RUN_LOG_FILE
     
     if [[ ! -x "${BIN_PATH}/pxe_umount_iso.sh" ]]; then
         log_warn "Umount script not found, skipping..."
-    #TODO 檔案必定存在
-    elif "${BIN_PATH}/pxe_umount_iso.sh" 2>&1; then
+    elif HTTP_PATH="${HTTP_PATH}" \
+        RUN_LOG_FILE="${RUN_LOG_FILE}" \
+        "${BIN_PATH}/pxe_umount_iso.sh"; then
         log_pass "ISO unmount process completed."
     else
-        log_error "ISO unmount failed."
+        log_warn "ISO unmount failed."
     fi
 }
 
@@ -942,16 +1094,30 @@ EOF
 
     echo "" | tee -a "${RUN_LOG_FILE}"
     echo "    PXE Services:" | tee -a "${RUN_LOG_FILE}"
-    local services=(pxe-mount.service apache2 NetworkManager-dispatcher)
+    local services=(
+        "apache2"
+        "isc-dhcp-server.service"
+        "isc-dhcp-server6.service"
+        "tftpd-hpa.service"
+        "radvd.service")
 
     for var in "${services[@]}"; do
         if systemctl is-active --quiet "$var"; then
             echo "      ${var}: active" | tee -a "${RUN_LOG_FILE}"
         else
             echo "      ${var}: failed" | tee -a "${RUN_LOG_FILE}"
-            systemctl status "${var}" --no-pager 2>&1 | tee -a "${RUN_LOG_FILE}"
+            systemctl status "${var}" --no-pager 2>&1 | tee -a "${RUN_LOG_FILE}" || true
         fi
     done
+
+    if systemctl is-failed --quiet pxe-mount.service 2>/dev/null; then
+        echo "      pxe-mount.service: failed" | tee -a "${RUN_LOG_FILE}"
+        systemctl status pxe-mount.service --no-pager 2>&1 | tee -a "${RUN_LOG_FILE}" || true
+    elif systemctl is-enabled --quiet "pxe-mount.service"; then
+        echo "      pxe-mount.service: enabled for next boot" | tee -a "${RUN_LOG_FILE}"
+    else
+        echo "      pxe-mount.service: not enabled" | tee -a "${RUN_LOG_FILE}"
+    fi
 
     cat << EOF | tee -a "${RUN_LOG_FILE}"
 
@@ -984,75 +1150,523 @@ EOF
     log "PXE Server setup completed successfully!"
 }
 
-# ─── Uninstall ───────────────────────────────────────────────────────────
+# ─── Uninstall ────────────────────────────────────────────────────────────────
 uninstall() {
-    [[ -f "${MAIN_PATH}/${PXE_CONFIG_FILE}" ]] || \
-    log_error "${MAIN_PATH}/${PXE_CONFIG_FILE} not found."
-    
-    # shellcheck disable=SC1091
-    source "${MAIN_PATH}/${PXE_CONFIG_FILE}"
-    
-    if [[ ! -f ${MAIN_PATH}/${PXE_CONFIG_FILE} ]]; then
-        log_error "${MAIN_PATH}/${PXE_CONFIG_FILE} not found. Cannot determine PXE paths for safe uninstall."
-    fi    
-    
-    for v in HTTP_PATH TFTP_PATH BIN_PATH LOG_PATH; do
-        if [[ -z "${!v:-}" || "${!v}" == "/" ]]; then
-            log_error "Variable $v is empty or unsafe. Aborting uninstall."
-        fi
-    done
-    
-    if [[ -d "${LOG_PATH}" ]]; then
-        RUN_LOG_FILE="${LOG_PATH}/pxe_uninstall_${RUN_ID}.log"
-    fi
-
     section "Uninstall PXE Server"
 
-    umount_iso || true
+    local installed_config="${INSTALLED_CONFIG_PATH}/${PXE_CONFIG_FILE}"
+    local state_manifest="${STATE_PATH}/managed_files.list"
+    local normalized_main_path
+    local normalized_http_path
+    local path_name
+    local path_value
+    local normalized_path
+    local service
+    local target
+    local relative_path
+    local original_path
+    local absent_marker
+    local saved_state
+    local enabled_state
+    local active_state
+    local restore_failed=false
 
-    local services=(
-        "pxe-mount.service"  
-        "apache2"
-        "NetworkManager-dispatcher"
-    )
-    for var in "${services[@]}"; do
-        if systemctl is-active --quiet "$var" 2>/dev/null; then
-            log "Stopping $var..."
-            systemctl stop "$var" >> "${RUN_LOG_FILE}" 2>&1 || log_warn "Failed to stop $var"
+    # -------------------------------------------------------------------------
+    # Validate loaded configuration and saved state
+    # -------------------------------------------------------------------------
+    [[ "${ACTIVE_CONFIG_FILE}" == "${installed_config}" ]] || \
+        log_error "Uninstall must use installed config: ${installed_config}"
+
+    [[ -f "${STATE_PATH}/recorded" ]] || \
+        log_error "Original system state backup is incomplete: ${STATE_PATH}"
+
+    [[ -f "${state_manifest}" ]] || \
+        log_error "Managed files manifest not found: ${state_manifest}"
+
+    normalized_main_path="$(realpath -m "${MAIN_PATH}")"
+    normalized_http_path="$(realpath -m "${HTTP_PATH}")"
+
+    # Validate all paths used by destructive operations.
+    for path_name in HTTP_PATH TFTP_PATH BIN_PATH LOG_PATH STATE_PATH; do
+        path_value="${!path_name:-}"
+
+        [[ -n "${path_value}" ]] || \
+            log_error "${path_name} is empty. Aborting uninstall."
+
+        [[ "${path_value}" == /* ]] || \
+            log_error "${path_name} must be an absolute path: ${path_value}"
+
+        normalized_path="$(realpath -m "${path_value}")"
+
+        [[ "${normalized_path}" != "/" ]] || \
+            log_error "${path_name} resolves to '/'. Aborting uninstall."
+
+        [[ "${normalized_path}" != "${normalized_main_path}" ]] || \
+            log_error "${path_name} must not equal MAIN_PATH."
+
+        [[ "${normalized_path}" == "${normalized_main_path}/"* ]] || \
+            log_error "${path_name} is outside MAIN_PATH: ${normalized_path}"
+    done
+
+    # -------------------------------------------------------------------------
+    # Stop the current PXE auto-mount service
+    # -------------------------------------------------------------------------
+    if systemctl is-active --quiet pxe-mount.service 2>/dev/null; then
+        if systemctl stop pxe-mount.service \
+            >> "${RUN_LOG_FILE}" 2>&1; then
+            log_pass "Stopped pxe-mount.service."
+        else
+            log_warn "Failed to stop pxe-mount.service."
+            restore_failed=true
         fi
-        if systemctl is-enabled --quiet "$var" 2>/dev/null; then
-            log "Disabling $var..."
-            systemctl disable "$var" >> "${RUN_LOG_FILE}" 2>&1 || log_warn "Failed to disable $var"
+    fi
+
+    if systemctl is-enabled --quiet pxe-mount.service 2>/dev/null; then
+        if systemctl disable pxe-mount.service \
+            >> "${RUN_LOG_FILE}" 2>&1; then
+            log_pass "Disabled pxe-mount.service."
+        else
+            log_warn "Failed to disable pxe-mount.service."
+            restore_failed=true
+        fi
+    fi
+
+    # -------------------------------------------------------------------------
+    # Unmount PXE ISO files using the shared wrapper
+    # -------------------------------------------------------------------------
+    if ! umount_iso; then
+        log_warn "ISO unmount helper reported a failure."
+    fi
+
+    # Do not continue if a filesystem remains mounted below HTTP_PATH.
+    if findmnt -rn -o TARGET |
+       awk -v path="${normalized_http_path}" '
+           $0 == path || index($0, path "/") == 1 {
+               found = 1
+           }
+           END {
+               exit !found
+           }
+       '; then
+        log_error \
+            "Mounted filesystems remain under ${HTTP_PATH}. Aborting uninstall."
+    fi
+
+    # -------------------------------------------------------------------------
+    # Prevent the dispatcher from restarting PXE services during uninstall
+    # -------------------------------------------------------------------------
+    if [[ -e "/etc/NetworkManager/dispatcher.d/50-pxe-services" ]]; then
+        if rm -f "/etc/NetworkManager/dispatcher.d/50-pxe-services"; then
+            log_pass "Removed current PXE NetworkManager dispatcher."
+        else
+            log_warn "Failed to remove current PXE dispatcher."
+            restore_failed=true
+        fi
+    fi
+
+    # -------------------------------------------------------------------------
+    # Stop services which may use the generated configurations
+    # -------------------------------------------------------------------------
+    local pxe_services=(
+        "isc-dhcp-server.service"
+        "isc-dhcp-server6.service"
+        "tftpd-hpa.service"
+        "radvd.service"
+    )
+
+    for service in "${pxe_services[@]}"; do
+        if systemctl is-active --quiet "${service}" 2>/dev/null; then
+            if systemctl stop "${service}" \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Stopped ${service}."
+            else
+                log_warn "Failed to stop ${service}."
+                restore_failed=true
+            fi
         fi
     done
 
-    rm -f /etc/netplan/02-pxe.yaml* ; netplan apply >> "${RUN_LOG_FILE}" 2>&1 || log_warn "Failed to apply netplan"
-    rm -f /etc/dhcp/dhcpd.conf* >> "${RUN_LOG_FILE}" 2>&1 
-    rm -f /etc/dhcp/dhcpd6.conf* >> "${RUN_LOG_FILE}" 2>&1
-    rm -f /etc/radvd.conf* >> "${RUN_LOG_FILE}" 2>&1
-    rm -f /etc/default/tftpd-hpa* >> "${RUN_LOG_FILE}" 2>&1
-    if [[ -d "/usr/local/lib/ipxe" ]]; then rm -rf /usr/local/lib/ipxe/ >> "${RUN_LOG_FILE}" 2>&1; fi
-    a2dissite pxe_apache.conf 2>&1 | tee -a "${RUN_LOG_FILE}"
-    rm -f /etc/apache2/sites-available/pxe_apache.conf* >> "${RUN_LOG_FILE}" 2>&1
-    a2ensite 000-default.conf 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to enable Apache site 000-default.conf"
-    systemctl daemon-reload 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to reload systemd daemon"
-    systemctl reload apache2 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to reload Apache"
-    rm -f /etc/systemd/system/pxe-mount.service >> "${RUN_LOG_FILE}" 2>&1
-    rm -f /etc/NetworkManager/dispatcher.d/50-pxe-services >> "${RUN_LOG_FILE}" 2>&1
-    if [[ -d ${MAIN_PATH} ]]; then
-        rm -f "${MAIN_PATH}/${PXE_CONFIG_FILE}" 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to remove ${MAIN_PATH}/${PXE_CONFIG_FILE}"
-        rm -rf "${HTTP_PATH}"/* 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to remove ${HTTP_PATH}"
-        rm -rf "${TFTP_PATH}"/* 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to remove ${TFTP_PATH}"
-        rm -rf "${BIN_PATH}"/* 2>&1 | tee -a "${RUN_LOG_FILE}" || log_warn "Failed to remove ${BIN_PATH}"
+    # -------------------------------------------------------------------------
+    # Disable the current PXE Apache site
+    # -------------------------------------------------------------------------
+    if [[ -e "/etc/apache2/sites-enabled/pxe_apache.conf" ]]; then
+        if a2dissite pxe_apache.conf \
+            >> "${RUN_LOG_FILE}" 2>&1; then
+            log_pass "Disabled current PXE Apache site."
+        else
+            log_warn "Failed to disable current PXE Apache site."
+            restore_failed=true
+        fi
     fi
 
-    log_pass "Remove PXE server done!"
-    log ""
+    # Remove the current project-created unit before restoring the original.
+    if [[ -e "/etc/systemd/system/pxe-mount.service" ]]; then
+        if rm -f "/etc/systemd/system/pxe-mount.service"; then
+            log_pass "Removed current pxe-mount.service."
+        else
+            log_warn "Failed to remove current pxe-mount.service."
+            restore_failed=true
+        fi
+    fi
 
-    read -r -p "Do you want to reboot now? Y/[N]: " REPLY
+    # -------------------------------------------------------------------------
+    # Restore files listed in the installation-time manifest
+    # -------------------------------------------------------------------------
+    while IFS='' read -r target || [[ -n "${target}" ]]; do
+        # Ignore empty lines and comments.
+        [[ -z "${target}" ]] && continue
+        [[ "${target}" =~ ^[[:space:]]*# ]] && continue
+
+        if [[ "${target}" != /* ]]; then
+            log_warn "Invalid path in managed files manifest: ${target}"
+            restore_failed=true
+            continue
+        fi
+
+        relative_path="${target#/}"
+        original_path="${STATE_PATH}/original/${relative_path}"
+        absent_marker="${STATE_PATH}/absent/${relative_path}"
+
+        if [[ -e "${original_path}" || -L "${original_path}" ]]; then
+            if ! mkdir -p "$(dirname "${target}")"; then
+                log_warn "Failed to create parent directory for: ${target}"
+                restore_failed=true
+                continue
+            fi
+
+            if ! rm -rf -- "${target}"; then
+                log_warn "Failed to remove current file before restore: ${target}"
+                restore_failed=true
+                continue
+            fi
+
+            if cp -a -- "${original_path}" "${target}"; then
+                log_pass "Restored original file: ${target}"
+            else
+                log_warn "Failed to restore original file: ${target}"
+                restore_failed=true
+            fi
+
+        elif [[ -e "${absent_marker}" ]]; then
+            if rm -rf -- "${target}"; then
+                log_pass "Removed installer-created file: ${target}"
+            else
+                log_warn "Failed to remove installer-created file: ${target}"
+                restore_failed=true
+            fi
+
+        else
+            log_warn "Original state was not recorded: ${target}"
+            restore_failed=true
+        fi
+    done < "${state_manifest}"
+
+    # -------------------------------------------------------------------------
+    # Reload systemd after restoring or removing unit files
+    # -------------------------------------------------------------------------
+    if systemctl daemon-reload >> "${RUN_LOG_FILE}" 2>&1; then
+        log_pass "Reloaded systemd configuration."
+    else
+        log_warn "Failed to reload systemd configuration."
+        restore_failed=true
+    fi
+
+    # -------------------------------------------------------------------------
+    # Apply restored Netplan configuration
+    # -------------------------------------------------------------------------
+    if command -v netplan >/dev/null 2>&1; then
+        if netplan generate >> "${RUN_LOG_FILE}" 2>&1; then
+            if netplan apply >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Applied restored Netplan configuration."
+            else
+                log_warn "Failed to apply restored Netplan configuration."
+                restore_failed=true
+            fi
+        else
+            log_warn "Restored Netplan configuration is invalid."
+            restore_failed=true
+        fi
+    else
+        log_warn "netplan command not found."
+        restore_failed=true
+    fi
+
+    # -------------------------------------------------------------------------
+    # Reload restored sysctl configuration
+    # -------------------------------------------------------------------------
+    if sysctl --system >> "${RUN_LOG_FILE}" 2>&1; then
+        log_pass "Reloaded sysctl configuration."
+    else
+        log_warn "Failed to reload sysctl configuration."
+        restore_failed=true
+    fi
+
+    # -------------------------------------------------------------------------
+    # Restore Apache site and module states
+    # -------------------------------------------------------------------------
+
+    # Restore the Apache default site state.
+    saved_state="$(
+        cat "${STATE_PATH}/apache/default-site" 2>/dev/null ||
+        printf '%s' "disabled"
+    )"
+
+    if [[ "${saved_state}" == "enabled" ]]; then
+        if a2ensite 000-default.conf \
+            >> "${RUN_LOG_FILE}" 2>&1; then
+            log_pass "Restored Apache default site to enabled."
+        else
+            log_warn "Failed to enable Apache default site."
+            restore_failed=true
+        fi
+    else
+        a2dissite 000-default.conf \
+            >> "${RUN_LOG_FILE}" 2>&1 || true
+
+        log_pass "Restored Apache default site to disabled."
+    fi
+
+    # Restore the previous PXE Apache site state.
+    saved_state="$(
+        cat "${STATE_PATH}/apache/pxe-site" 2>/dev/null ||
+        printf '%s' "disabled"
+    )"
+
+    if [[ "${saved_state}" == "enabled" ]]; then
+        if [[ -f "/etc/apache2/sites-available/pxe_apache.conf" ]]; then
+            if a2ensite pxe_apache.conf \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Restored previous PXE Apache site to enabled."
+            else
+                log_warn "Failed to restore previous PXE Apache site."
+                restore_failed=true
+            fi
+        else
+            log_warn \
+                "Previous PXE Apache site should be enabled, but its config is missing."
+            restore_failed=true
+        fi
+    else
+        rm -f "/etc/apache2/sites-enabled/pxe_apache.conf"
+        log_pass "Restored previous PXE Apache site to disabled."
+    fi
+
+    # Restore the Apache headers module state.
+    saved_state="$(
+        cat "${STATE_PATH}/apache/headers-module" 2>/dev/null ||
+        printf '%s' "disabled"
+    )"
+
+    if [[ "${saved_state}" == "enabled" ]]; then
+        if a2enmod headers >> "${RUN_LOG_FILE}" 2>&1; then
+            log_pass "Restored Apache headers module to enabled."
+        else
+            log_warn "Failed to enable Apache headers module."
+            restore_failed=true
+        fi
+    else
+        a2dismod headers >> "${RUN_LOG_FILE}" 2>&1 || true
+        log_pass "Restored Apache headers module to disabled."
+    fi
+
+    # -------------------------------------------------------------------------
+    # Remove PXE-managed runtime directories
+    # -------------------------------------------------------------------------
+    for path_name in HTTP_PATH TFTP_PATH BIN_PATH; do
+        path_value="${!path_name}"
+
+        if [[ -d "${path_value}" ]]; then
+            if rm -rf -- "${path_value}"; then
+                log_pass "Removed ${path_name}: ${path_value}"
+            else
+                log_warn "Failed to remove ${path_name}: ${path_value}"
+                restore_failed=true
+            fi
+        else
+            log_info "${path_name} does not exist: ${path_value}"
+        fi
+    done
+
+    # -------------------------------------------------------------------------
+    # Restore package service active states
+    #
+    # Their enabled states are not changed by setup_services(), so only restore
+    # whether they were active before installation.
+    # -------------------------------------------------------------------------
+    local tracked_services=(
+        "isc-dhcp-server.service"
+        "isc-dhcp-server6.service"
+        "tftpd-hpa.service"
+        "radvd.service"
+    )
+
+    for service in "${tracked_services[@]}"; do
+        saved_state="$(
+            cat "${STATE_PATH}/services/${service}.active" 2>/dev/null ||
+            printf '%s' "inactive"
+        )"
+
+        if [[ "${saved_state}" == "active" ]]; then
+            if systemctl start "${service}" \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Restored active state: ${service}"
+            else
+                log_warn "Failed to restore active state: ${service}"
+                restore_failed=true
+            fi
+        else
+            if systemctl stop "${service}" \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Restored inactive state: ${service}"
+            else
+                log_warn "Failed to restore inactive state: ${service}"
+                restore_failed=true
+            fi
+        fi
+    done
+
+    # -------------------------------------------------------------------------
+    # Restore Apache runtime state
+    # -------------------------------------------------------------------------
+    active_state="$(
+        cat "${STATE_PATH}/services/apache2.service.active" 2>/dev/null ||
+        printf '%s' "inactive"
+    )"
+
+    if apache2ctl configtest >> "${RUN_LOG_FILE}" 2>&1; then
+        log_pass "Restored Apache configuration is valid."
+
+        if [[ "${active_state}" == "active" ]]; then
+            if systemctl is-active --quiet apache2.service; then
+                if systemctl reload apache2.service \
+                    >> "${RUN_LOG_FILE}" 2>&1; then
+                    log_pass "Reloaded restored Apache configuration."
+                else
+                    log_warn "Failed to reload restored Apache configuration."
+                    restore_failed=true
+                fi
+            else
+                if systemctl start apache2.service \
+                    >> "${RUN_LOG_FILE}" 2>&1; then
+                    log_pass "Restored active state: apache2.service"
+                else
+                    log_warn "Failed to restore active state: apache2.service"
+                    restore_failed=true
+                fi
+            fi
+        else
+            if systemctl stop apache2.service \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Restored inactive state: apache2.service"
+            else
+                log_warn "Failed to restore inactive state: apache2.service"
+                restore_failed=true
+            fi
+        fi
+    else
+        log_warn "Restored Apache configuration test failed."
+        restore_failed=true
+    fi
+
+    # -------------------------------------------------------------------------
+    # Restore the original pxe-mount.service state
+    #
+    # Correct order:
+    #   1. Unit file has already been restored from the manifest
+    #   2. daemon-reload has already completed
+    #   3. Restore enabled state
+    #   4. Restore active state
+    # -------------------------------------------------------------------------
+    if [[ -f "/etc/systemd/system/pxe-mount.service" ]]; then
+        enabled_state="$(
+            cat "${STATE_PATH}/services/pxe-mount.service.enabled" \
+                2>/dev/null ||
+            printf '%s' "disabled"
+        )"
+
+        active_state="$(
+            cat "${STATE_PATH}/services/pxe-mount.service.active" \
+                2>/dev/null ||
+            printf '%s' "inactive"
+        )"
+
+        # Restore boot-time enabled state first.
+        if [[ "${enabled_state}" == "enabled" ]]; then
+            if systemctl enable pxe-mount.service \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Restored enabled state: pxe-mount.service"
+            else
+                log_warn "Failed to restore enabled state: pxe-mount.service"
+                restore_failed=true
+            fi
+        else
+            if systemctl disable pxe-mount.service \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Restored disabled state: pxe-mount.service"
+            else
+                log_warn "Failed to restore disabled state: pxe-mount.service"
+                restore_failed=true
+            fi
+        fi
+
+        # Restore current runtime active state second.
+        if [[ "${active_state}" == "active" ]]; then
+            if systemctl start pxe-mount.service \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Restored active state: pxe-mount.service"
+            else
+                log_warn "Failed to restore active state: pxe-mount.service"
+                restore_failed=true
+            fi
+        else
+            if systemctl stop pxe-mount.service \
+                >> "${RUN_LOG_FILE}" 2>&1; then
+                log_pass "Restored inactive state: pxe-mount.service"
+            else
+                log_warn "Failed to restore inactive state: pxe-mount.service"
+                restore_failed=true
+            fi
+        fi
+    else
+        log_info \
+            "Original pxe-mount.service did not exist; no state restoration required."
+    fi
+
+    # -------------------------------------------------------------------------
+    # Remove installed state only after every restoration succeeds
+    # -------------------------------------------------------------------------
+    if [[ "${restore_failed}" == false ]]; then
+        rm -rf -- "${STATE_PATH}"
+        rm -f "${INSTALLED_CONFIG_PATH}/${METADATA_FILE}"
+        rm -f "${installed_config}"
+        rmdir "${INSTALLED_CONFIG_PATH}" 2>/dev/null || true
+        rm -f "${MAIN_PATH}/pxe_installer.sh"
+
+        log_pass "Removed saved original system state."
+        log_pass "Removed installed PXE configuration and metadata."
+    else
+        log_warn "Uninstall completed with restoration warnings."
+        log_warn "Original system state was preserved in: ${STATE_PATH}"
+        log_warn \
+            "Installed config was preserved for uninstall retry: ${installed_config}"
+    fi
+
+    log_warn "PXE packages were preserved."
+    log_warn "PXE logs were preserved in: ${LOG_PATH}"
+
+    if [[ "${restore_failed}" == false ]]; then
+        log_pass "PXE server uninstall completed."
+    else
+        log_warn "PXE server uninstall completed with warnings."
+    fi
+
+    log_info "Uninstall log saved to: ${RUN_LOG_FILE}"
+
     echo
+    read -r -p "Do you want to reboot now? [y/N]: " REPLY
     REPLY="${REPLY:-N}"
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
+
+    if [[ "${REPLY}" =~ ^[Yy]$ ]]; then
         log_info "System will reboot in 5 seconds..."
         sleep 5
         reboot
@@ -1061,7 +1675,7 @@ uninstall() {
     fi
 }
 
-usage() {
+help() {
     cat >&2 <<EOF
 ${PRODUCT_NAME} (${VERSION})
 
@@ -1083,81 +1697,153 @@ Examples:
 EOF
 }
 
-main() {
-    check_execution_context
-    cleanup
-    check_os_info
-    load_metadata
+set_action() {
+    local requested_action="$1"
 
+    if [[ -n "${ACTION}" && "${ACTION}" != "${requested_action}" ]]; then
+        log_error "Conflicting actions: ${ACTION} and ${requested_action}"
+    fi
+
+    ACTION="${requested_action}"
+}
+
+parse_arguments() {
     while [[ $# -gt 0 ]]; do
-        case $1 in
+        case "$1" in
             -h|--help)
-                usage
-                exit 0
+                set_action "help"
                 ;;
+
             -r|--remove|--uninstall)
-                echo; echo "Do You want to uninstall PXE server?"
-                echo "   [Y] Yes [N] No (Default)"
-                read -r REPLY
-                REPLY="${REPLY:-N}"
-                if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
-                    echo "Aborting uninstall."
-                    exit 1
-                fi
-                uninstall
-                exit 0
+                set_action "uninstall"
                 ;;
+
             -m|--mount)
-                load_pxe_config
-                mount_iso
-                exit 0
+                set_action "mount"
                 ;;
+
             -u|--umount)
-                load_pxe_config
-                umount_iso
-                exit 0
+                set_action "umount"
                 ;;
+
             --no-ipxe-build)
                 SKIP_IPXE_BUILD=true
                 ;;
+
+            --config)
+                shift
+                [[ $# -gt 0 ]] || log_error "--config requires a file path."
+                CONFIG_FILE="$1"
+                ;;
+
+            --config=*)
+                CONFIG_FILE="${1#*=}"
+                ;;
+
             *)
-                log_error "Invalid input: $1"
-                usage
-                exit 1
+                log_error "Invalid option: $1"
                 ;;
         esac
+
         shift
     done
 
+    ACTION="${ACTION:-install}"
+
+    if [[ "${SKIP_IPXE_BUILD}" == true &&
+          "${ACTION}" != "install" ]]; then
+        log_error "--no-ipxe-build can only be used with installation."
+    fi
+
+    if [[ -n "${CONFIG_FILE}" &&
+          "${ACTION}" != "install" ]]; then
+        log_error "--config can only be used with installation."
+    fi
+}
+
+main() {
+    # Reserved for future feature:
+    # cleanup
+    load_metadata
+
+    parse_arguments "$@"
+    
+    if [[ "${ACTION}" == "help" ]]; then
+        help
+        exit 0
+    fi
+
+    check_execution_context
+    check_os_info
     load_pxe_config
 
-    echo; echo "Do you want to install PXE server?"
-    echo "   [Y] Yes (Default) [N] No "
-    read -r REPLY
-    REPLY="${REPLY:-Y}"
-    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
-        echo "Aborting install."
-        exit 1
-    fi 
+    if [[ "${ACTION}" == "install" &&
+        "${SKIP_IPXE_BUILD}" == true ]]; then
+        log_warn "iPXE build is disabled by --no-ipxe-build."
+        log_warn "Existing iPXE binaries in /usr/local/lib/ipxe will be used."
+    fi
 
-    log "Starting PXE Server Setup in 3 seconds..."
-    sleep 3
+    case "${ACTION}" in
+        install)
+            echo
+            echo "Do you want to install PXE server?"
+            echo "   [Y] Yes (Default) [N] No "
+            read -r REPLY
+            REPLY="${REPLY:-Y}"
+            if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+                echo "Aborting install."
+                exit 1
+            fi 
 
-    show_welcome_info  
-    install_dependency
-    setup_firewall
-    setup_dir
-    setup_networkmanager
-    setup_dhcp
-    setup_radvd
-    setup_tftp
-    [[ "$SKIP_IPXE_BUILD" != true ]] && build_ipxe
-    setup_apache
-    setup_pxe_files
-    create_ipxe_menu
-    create_helper_scripts
-    setup_services
-    mount_iso
-    final_status
+            log "Starting PXE Server Setup in 3 seconds..."
+            sleep 3
+
+            show_welcome_info
+            install_dependency
+            setup_firewall
+            setup_dir
+            setup_config
+            backup_original_state
+            setup_networkmanager
+            setup_dhcp
+            setup_radvd
+            setup_tftp
+            [[ "${SKIP_IPXE_BUILD}" != true ]] && build_ipxe
+            setup_apache
+            create_helper_scripts
+            umount_iso
+            setup_pxe_files
+            create_ipxe_menu
+            mount_iso
+            setup_services
+            final_status
+            ;;
+
+        uninstall)
+            echo
+            echo "Do You want to uninstall PXE server?"
+            echo "   [Y] Yes [N] No (Default)"
+            read -r REPLY
+            REPLY="${REPLY:-N}"
+            if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+                echo "Aborting uninstall."
+                exit 1
+            fi
+
+            uninstall
+            ;;
+
+        mount)
+            mount_iso
+            ;;
+
+        umount)
+            umount_iso
+            ;;
+
+        *)
+            log_error "Unsupported action: ${ACTION}"
+            ;;
+    esac
 }
 main "$@"
