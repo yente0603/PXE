@@ -1,0 +1,21 @@
+# System configuration files managed by the PXE installer
+
+/etc/netplan/02-pxe.yaml
+
+/etc/dhcp/dhcpd.conf
+/etc/dhcp/dhcpd6.conf
+/etc/default/isc-dhcp-server
+
+/etc/default/tftpd-hpa
+/etc/radvd.conf
+/etc/sysctl.d/99-pxe-ipv6.conf
+
+/etc/apache2/sites-available/pxe_apache.conf
+
+/etc/NetworkManager/dispatcher.d/50-pxe-services
+/etc/systemd/system/pxe-mount.service
+
+/usr/local/lib/ipxe/undionly-legacy.kpxe
+/usr/local/lib/ipxe/ipxe-x86.efi
+/usr/local/lib/ipxe/snp-arm64.efi
+/usr/local/lib/ipxe/ipxe-arm64.efi

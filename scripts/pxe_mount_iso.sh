@@ -22,8 +22,6 @@ CONFIG_FILE=""
 RED='\033[1;31m'; GREEN='\033[1;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
-CURRENT_SECTION=""
-
 log() {
     local message="$1"
     local timestamp
@@ -52,7 +50,6 @@ log_error() {
 section() {
     if [[ "${MODE}" -eq 0 ]]; then return; fi
 
-    CURRENT_SECTION="$*"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}" | sed 's/\x1b\[[0-9;]*m//g' >> "${RUN_LOG_FILE}"
 }
@@ -72,7 +69,7 @@ check_execution_context() {
 load_config() {
     section "Load PXE Config"
 
-    CONFIG_FILE="${MAIN_PATH}/pxe.conf"
+    CONFIG_FILE="${MAIN_PATH}/config/pxe.conf"
     # CONFIG_FILE="${CONFIG_FILE:-${MAIN_PATH}/pxe.conf}"
     
     [[ -f "${CONFIG_FILE}" ]] || log_error "Configuration file not found: ${CONFIG_FILE}"
@@ -95,7 +92,8 @@ load_config() {
         rm -f "${RUN_TEMP_LOG}"
     fi
 
-    log_pass "PXE config load completed."
+    log_pass "PXE config loaded from: ${CONFIG_FILE}"
+    log_pass "Logs save to: ${RUN_LOG_FILE}"
 }
 
 # ─── Mount ISO ────────────────────────────────────────────────────────────────
@@ -121,9 +119,11 @@ mount_iso() {
         local filename
         local mount_point
 
-        rel_path="${iso#${ISO_PATH}/}"
+        rel_path="${iso#"${ISO_PATH}"/}"
         dirname=$(dirname "${rel_path}")
-        filename=$(basename "${iso}" .iso)
+        # filename=$(basename "${iso}" .iso)
+        filename="$(basename "${iso}")"
+        filename="${filename%.*}"
         mount_point="${HTTP_PATH}/${dirname}/${filename}"
 
         if [[ "${iso}" == *"winpe_with_ethernet_driver_from_win11_24h2_64bits"* ]]; then
@@ -141,10 +141,10 @@ mount_iso() {
                 log_error "Failed to mount ${filename}"
             fi
         fi
-    done < <(find "${ISO_PATH}" -type f -name "*.iso")
+    done < <(find "${ISO_PATH}" -type f -iname "*.iso")
 
     if [[ ${count} -eq 0 ]]; then
-        log_warn "No ISO files found."
+        log_warn "No ISO files found in ${ISO_PATH}"
     fi
 }
 

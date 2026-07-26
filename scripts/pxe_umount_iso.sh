@@ -22,7 +22,6 @@ CONFIG_FILE=""
 RED='\033[1;31m'; GREEN='\033[1;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
-CURRENT_SECTION=""
 
 log() {
     local message="$1"
@@ -54,7 +53,6 @@ log_error() {
 section() {
     if [[ "${MODE}" -eq 0 ]]; then return; fi
 
-    CURRENT_SECTION="$*"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}"
     echo -e "\n${BOLD}── $* ──────────────────────────────────────────${RESET}" | sed 's/\x1b\[[0-9;]*m//g' >> "${RUN_LOG_FILE}"
 }
@@ -74,7 +72,7 @@ check_execution_context() {
 load_config() {
     section "Load PXE Config"
 
-    CONFIG_FILE="${MAIN_PATH}/pxe.conf"
+    CONFIG_FILE="${MAIN_PATH}/config/pxe.conf"
 
     [[ -f "${CONFIG_FILE}" ]] || log_error "Configuration file not found: ${CONFIG_FILE}"
 
@@ -97,7 +95,8 @@ load_config() {
         rm -f "${RUN_TEMP_LOG}"
     fi
 
-    log_pass "PXE config load completed."
+    log_pass "PXE config loaded from: ${CONFIG_FILE}"
+    log_pass "Logs save to: ${RUN_LOG_FILE}"
 }
 
 
