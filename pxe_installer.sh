@@ -1086,10 +1086,10 @@ EOF
         ipv4=$(ip -4 addr show "${PXE_BRIDGE}" | awk '/inet / {print $2}')
         ipv6=$(ip -6 addr show "${PXE_BRIDGE}" | awk '/inet6 / && !/scope link/ {print $2}')
 
-        echo "      IPv4: ${ipv4:-N/A}" | tee -a "${RUN_LOG_FILE}"
-        echo "      IPv6: ${ipv6:-N/A}" | tee -a "${RUN_LOG_FILE}"
+        echo "        IPv4: ${ipv4:-N/A}" | tee -a "${RUN_LOG_FILE}"
+        echo "        IPv6: ${ipv6:-N/A}" | tee -a "${RUN_LOG_FILE}"
     else
-        echo "      Status: DOWN" | tee -a "${RUN_LOG_FILE}"
+        echo "        Status: DOWN" | tee -a "${RUN_LOG_FILE}"
     fi
 
     echo "" | tee -a "${RUN_LOG_FILE}"
@@ -1103,20 +1103,20 @@ EOF
 
     for var in "${services[@]}"; do
         if systemctl is-active --quiet "$var"; then
-            echo "      ${var}: active" | tee -a "${RUN_LOG_FILE}"
+            echo "        ${var}: active" | tee -a "${RUN_LOG_FILE}"
         else
-            echo "      ${var}: failed" | tee -a "${RUN_LOG_FILE}"
+            echo "        ${var}: failed" | tee -a "${RUN_LOG_FILE}"
             systemctl status "${var}" --no-pager 2>&1 | tee -a "${RUN_LOG_FILE}" || true
         fi
     done
 
     if systemctl is-failed --quiet pxe-mount.service 2>/dev/null; then
-        echo "      pxe-mount.service: failed" | tee -a "${RUN_LOG_FILE}"
+        echo "        pxe-mount.service: failed" | tee -a "${RUN_LOG_FILE}"
         systemctl status pxe-mount.service --no-pager 2>&1 | tee -a "${RUN_LOG_FILE}" || true
     elif systemctl is-enabled --quiet "pxe-mount.service"; then
-        echo "      pxe-mount.service: enabled for next boot" | tee -a "${RUN_LOG_FILE}"
+        echo "        pxe-mount.service: enabled for next boot" | tee -a "${RUN_LOG_FILE}"
     else
-        echo "      pxe-mount.service: not enabled" | tee -a "${RUN_LOG_FILE}"
+        echo "        pxe-mount.service: not enabled" | tee -a "${RUN_LOG_FILE}"
     fi
 
     cat << EOF | tee -a "${RUN_LOG_FILE}"
