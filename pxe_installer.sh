@@ -1764,15 +1764,15 @@ parse_arguments() {
 main() {
     # Reserved for future feature:
     # cleanup
-    load_metadata
-
     parse_arguments "$@"
     
     if [[ "${ACTION}" == "help" ]]; then
+        load_metadata > /dev/null
         help
         exit 0
     fi
-
+    
+    load_metadata
     check_execution_context
     check_os_info
     load_pxe_config
