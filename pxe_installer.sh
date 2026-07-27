@@ -1078,7 +1078,7 @@ final_status() {
 EOF
 
     if ip link show "${PXE_BRIDGE}" | grep -q "<.*UP"; then
-        echo "      Status: UP" | tee -a "${RUN_LOG_FILE}"
+        echo "        Status: UP" | tee -a "${RUN_LOG_FILE}"
 
         local ipv4
         local ipv6
