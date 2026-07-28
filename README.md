@@ -1,6 +1,6 @@
 # PXE
 
-**Latest Version**: 3.0.0  
+**Latest Version**: 3.0.1  
 **Release Date**: 2026/07/28  
 **Author**: Jasper Lee  
 

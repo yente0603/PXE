@@ -722,7 +722,7 @@ setup_pxe_files() {
     log_pass "iPXE related files copy completed."
     
     # EFI shell files
-    if [[ -f "${SCRIPT_DIR}/assets/efi/BOOT/Shellx64.efi" ]]; then
+    if [[ -f "${SCRIPT_DIR}/assets/efi/BOOT/shellx64.efi" ]]; then
         cp -r "${SCRIPT_DIR}/assets/efi/BOOT/" "${TFTP_PATH}/efi/" 2>&1 | tee -a "${RUN_LOG_FILE}"
         log_pass "EFI Shell setup completed."
     else
@@ -832,7 +832,7 @@ boot
 
 :efi_shell
 echo Loading EFI Shell...
-chain tftp://\${pxeip}/efi/boot/Shellx64.efi
+chain tftp://\${pxeip}/efi/boot/shellx64.efi
 
 # ============================================================
 # ARM64 Menu
