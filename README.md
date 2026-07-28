@@ -1,91 +1,127 @@
 # PXE
 
-**Latest Version**: 2.2  
-**Release Date**: 2026/05/21  
+**Latest Version**: 3.0.0  
+**Release Date**: 2026/07/28  
 **Author**: Jasper Lee  
 
-This project provides a repeatable PXE server setup for Ubuntu Desktop. It automates the network boot environment, including bridge networking, DHCP, TFTP, HTTP, and iPXE configuration for both IPv4 and IPv6.
+This project provides a repeatable PXE server setup for Ubuntu Desktop. It configures bridge networking, DHCP, TFTP, Apache HTTP, and iPXE for IPv4 and IPv6 network boot.
 
 ## Features
 
 - IPv4 and IPv6 PXE boot support
-- Automated setup script by one click
-- Supports bootup x86_64 and aarch64 systems (through patch)
-- Optional local assets for EFI Shell, WinPE, and Ghost integration
+- Automated PXE server installation
+- Legacy BIOS, x86_64 UEFI, and ARM64 UEFI iPXE binaries
+- Optional EFI Shell, WinPE, and Ghost assets
+- ISO mount and unmount helpers
+- Structured installation and operation logs
+- State-aware uninstallation and original configuration restoration
+- SHA-256 verification for the bundled iPXE source archive
 
 ## Compatibility
 
-- Verified on Ubuntu Desktop 24.04.3
-- Assumes a desktop installation with NetworkManager enabled
-- Uses netplan with the NetworkManager renderer for bridge setup
-- Requires `sudo` because the installer modifies networking and system services
+- Supports Ubuntu Desktop 22.04 LTS and later supported releases
+- Requires NetworkManager
+- Uses Netplan with the NetworkManager renderer
+- Requires `sudo` because it modifies networking and system services
 
-If you run a server-only or heavily customized Ubuntu install, review the script and configuration before use.
+Server-only or heavily customized Ubuntu installations are not currently supported. Review the network configuration before running the installer.
 
-## How to Run
+## Configuration
 
 1. Copy the sample configuration:
 
    ```bash
-   cp config.env.example config.env
+   cp config/pxe.conf.example config/pxe.conf
    ```
 
-2. Edit `config.env` and make sure the required values are correct:
-   - `PXE_INTERFACE` for the physical network interface
-   - `PXE_BRIDGE` for the bridge name
-   - IPv4 and IPv6 addresses and DHCP ranges
-   - `ISO_PATH` pointing to a mounted installation image directory
+2. Edit `config/pxe.conf` and verify:
 
-3. Run the installer with `sudo`:
+   - `PXE_INTERFACE`: physical PXE network interface
+   - `PXE_BRIDGE`: PXE bridge name
+   - IPv4 and IPv6 addresses, prefixes, and DHCP ranges
+   - `ISO_PATH`: directory containing ISO files
 
-   ```bash
-   sudo bash pxe_installer.sh
-   ```
+Paths managed by the installation are stored under `/opt/pxe`.
 
-4. (Optional) Edit your configuration:
-   - Edit the iPXE menu in `/pxe/tftp/ipxe/boot.ipxe` to match your images
-   - Edit Samba information in `/pxe/http/winpe/startup.bat` for the WinPE environment
-   - Use `sudo bash pxe_installer.sh -h` to view all supported options
+## How to Run
+
+Install the PXE server:
+
+```bash
+sudo ./pxe_installer.sh
+```
+
+Show available options:
+
+```bash
+sudo ./pxe_installer.sh --help
+```
+
+Common operations:
+
+```bash
+sudo ./pxe_installer.sh --mount
+sudo ./pxe_installer.sh --umount
+sudo ./pxe_installer.sh --uninstall
+sudo ./pxe_installer.sh --no-ipxe-build
+```
+
+After installation, custom files can be edited at:
+
+- iPXE menu: `/opt/pxe/tftp/ipxe/boot.ipxe`
+- WinPE startup script: `/opt/pxe/http/winpe/startup.bat`
+- Installed configuration: `/opt/pxe/config/pxe.conf`
+- Operation logs: `/opt/pxe/logs`
 
 ## What the Installer Does
 
-- Installs the required PXE-related packages and tools
-- Creates the local service directories under `/pxe`
+- Installs the required PXE packages and build tools
+- Creates the PXE directory layout under `/opt/pxe`
+- Records managed configuration and service states
 - Generates and applies the Netplan bridge configuration
-- Configures DHCPv4 and DHCPv6 services
-- Sets up TFTP and Apache HTTP serving for boot files and installation media
-- Copies local boot assets when they are available, including iPXE, EFI shell files, and WinPE files
-- Builds the PXE boot menu for `x86_64` and `aarch64`
-- Supports install, mount-only, unmount-only, uninstall, and `--no-ipxe-build` workflows
+- Configures DHCPv4, DHCPv6, TFTP, radvd, and Apache
+- Builds iPXE binaries for Legacy BIOS, x86_64 UEFI, and ARM64 UEFI
+- Copies available EFI Shell, WinPE, and Ghost assets
+- Generates the iPXE boot menu
+- Creates ISO mount helpers and a systemd auto-mount service
+- Supports reinstallation without overwriting the original-state snapshot
+- Restores managed files and service states during uninstallation
+
+Dependency packages and PXE logs are preserved after uninstallation.
 
 ## Repository Notes
 
-Some boot assets are not stored in GitHub because they are covered by **NDA restrictions**. The installer expects some files to exist locally and the repository `.gitignore` intentionally excludes items such as:
+Some boot assets are not stored in GitHub because of licensing or **NDA restrictions**. The repository may exclude:
 
-- `*.iso`
-- `*.wim`
-- Ghost
-- WinPE content under `assets/winpe/`
-- Other generated or machine-specific assets used by the installer
+- `.iso` and `.wim` images
+- WinPE content
+- Ghost files
+- Other machine-specific boot assets
 
-The script checks for these files at runtime and only installs the corresponding PXE menu entries or services when the local files are present. In practice, this means you may need to prepare ISO, WIM, WinPE, EFI Shell, and Ghost files on your machine before running the installer. If you need the full installation package such as `pxe_installer_<VERSION>.tgz`, please contact the author.
+Missing optional assets are reported during installation and must be supplied manually if required.
+
+The patch under `patch/v2.2_jetson_air021a1` is intended for PXE installer v2.2 and is not compatible with the v3.0.0 `/opt/pxe` layout without modification.
+
+For the complete installation package, such as `pxe_installer_<VERSION>.tgz` or `pxe_installer_<VERSION>.run`, contact the author.
 
 ## Notes
 
-- Make sure `ISO_PATH` is mounted and readable before running the script.
-- If you are on a minimal or server-oriented Ubuntu image, confirm that NetworkManager is installed and active before running the installer.
-- The installer modifies system networking and service configuration, so it should only be used in a trusted internal network.
-- If you encounter the CRLF issue such as `sudo: unable to execute ./pxe_installer_<VERSION>.sh: No such file or directory`, please refer commands below to convert the script in LF:
+- Ensure `ISO_PATH` exists and is readable before mounting ISO files.
+- Ensure NetworkManager is installed and active before running the installer.
+- Do not use the host's management interface as `PXE_INTERFACE` without reviewing the network impact.
+- The PXE DHCP service should only be used on a trusted and isolated network.
+- Update the hardcoded iPXE menu entries to match the available installation images.
+- Verify the WinPE startup script and SMB path before using Windows deployment features.
 
-    ```bash
-    sudo apt update
-    sudo apt install dos2unix
-    dos2unix ./pxe_installer_<VERSION>.sh
-    ```
+If a script was saved with Windows CRLF line endings, convert it to LF:
 
-- If you are customizing Windows boot support, verify `/pxe/http/winpe/startup.bat` and the corresponding SMB path before enabling WinPE in the menu.
+```bash
+sudo apt-get update
+sudo apt-get install -y dos2unix
+dos2unix pxe_installer.sh scripts/*.sh
+```
 
 ## Reference
 
 - [iPXE](https://ipxe.org/)
-- [Add driver to an offline Windows image](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/add-and-remove-drivers-to-an-offline-windows-image?view=windows-11)
+- [Add Drivers to an Offline Windows Image](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/add-and-remove-drivers-to-an-offline-windows-image?view=windows-11)

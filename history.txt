@@ -1,22 +1,32 @@
+Version: 3.0.0
+    Installer    : pxe_installer.sh
+    Release Date : 2026/07/28
+    Description  :
+        a. Refactor installer configuration and workflow.
+        b. Move the PXE installation layout from /pxe to /opt/pxe.
+        c. Add structured and separated operation logs.
+        d. Replace MD5 with SHA-256 verification for the iPXE source archive.
+        e. Add state-aware uninstallation and original system state restoration.
+
 Version: 2.2
     Installer    : pxe_installer.sh
     Release Date : 2026/05/21
     Description  : 
-	a. Refactor: Folder logic for case-insensitive
-	b. Refactor: Re-name "undionly.kpxe" and "ipxe.efi" for corresponding platform
-	c. Support aarch64 booting to PXE menu
-	d. Update pxe-system-type for x86_64 and aarch64
-    e. Fixs some bugs
+        a. Refactor: Folder logic for case-insensitive
+        b. Refactor: Re-name "undionly.kpxe" and "ipxe.efi" for corresponding platform
+        c. Support aarch64 booting to PXE menu
+        d. Update pxe-system-type for x86_64 and aarch64
+        e. Fixs some bugs
 
 Version: 2.1
     Installer    : pxe_installer.sh
     Release Date : 2026/05/06
     Description  : 
-	a. The iPXE version has been set to 1.21.1 using local source code, as version 2.0 does not support keyboard and mouse functionality.
-	b. Set version as global variable
-	c. Remove debug mode for misunderstanding
-	d. Fixs some syntax bugs
-	e. Add 'set_color()' function
+        a. The iPXE version has been set to 1.21.1 using local source code, as version 2.0 does not support keyboard and mouse functionality.
+        b. Set version as global variable
+        c. Remove debug mode for misunderstanding
+        d. Fixs some syntax bugs
+        e. Add 'set_color()' function
 
 Version: 2.0
     Installer    : pxe_installer.sh
@@ -25,7 +35,7 @@ Version: 2.0
         a. Refactor as functional setup script and add config.env
         b. Support both IPv4 and IPv6
         c. Only support x86 platform, Ubuntu Desktop version
-	d. Setup DHCP by virtual LAN bridge
+	    d. Setup DHCP by virtual LAN bridge
 
 Version: 1.1
     Installer    : pxe-setup_v1.1.sh

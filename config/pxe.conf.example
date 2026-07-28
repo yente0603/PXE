@@ -1,40 +1,26 @@
-# ===== Required: Network (IPv4) =====
 PXE_INTERFACE=enp3s0
 PXE_DOMAIN_NAME=pxe.local
 PXE_BRIDGE=PXE_BRIDGE
-
 PXE_SERVER_IPv4=192.168.1.10
 PXE_SUBNET_IPv4=192.168.1.0
 PXE_NETMASK_IPv4=255.255.255.0
 PXE_DHCP_RANGE_START_IPv4=192.168.1.100
 PXE_DHCP_RANGE_END_IPv4=192.168.1.200
-
-# CIDR prefix (default: /24)
-# This script assumes /24 subnet, DO NOT change unless modifying script logic
 PXE_PREFIX_IPv4=24
 DNS_SERVER_IPv4=8.8.8.8
 
-# ===== Required: Network (IPv6) =====
 PXE_SERVER_IPv6=fd00:192:168:100::1
 PXE_SUBNET_IPv6=fd00:192:168:100::
 PXE_DHCP_RANGE_START_IPv6=fd00:192:168:100::100
 PXE_DHCP_RANGE_END_IPv6=fd00:192:168:100::200
-
-# IPv6 prefix (default: /64)
 PXE_PREFIX_IPv6=64
-
-# ===== Optional: IPv6 =====
 DNS_SERVER_IPv6=2001:4860:4860::8888
-
-# ===== Required: Paths =====
-# NOTE: Only ISO_PATH is configurable. Other paths are fixed at /pxe/* 
-#       and tied to the script's internal logic. DO NOT change.
-ISO_PATH=/pxe/iso
-HTTP_PATH=/pxe/http
-TFTP_PATH=/pxe/tftp
-LOG_PATH=/pxe/log
-BIN_PATH=/pxe/bin
-
-# ===== Optional: DHCP =====
 DHCP_LEASE_TIME=600
 DHCP_MAX_LEASE_TIME=7200
+
+ISO_PATH=/mnt/iso
+HTTP_PATH=${MAIN_PATH}/http
+TFTP_PATH=${MAIN_PATH}/tftp
+BIN_PATH=${MAIN_PATH}/bin
+LOG_PATH=${MAIN_PATH}/logs
+STATE_PATH=${MAIN_PATH}/state
