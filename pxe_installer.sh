@@ -223,7 +223,7 @@ show_welcome_info() {
     PXE BRIDGE: ${PXE_BRIDGE}
     PXE SERVER [IPv4]: ${PXE_SERVER_IPv4}
     PXE SERVER [IPv6]: ${PXE_SERVER_IPv6}
-    Date/Time: $(date)
+    Date/Time: $(LC_ALL=C date '+%Y-%m-%d %H:%M:%S $Z')
 ========================================================
 EOF
 }
@@ -602,7 +602,7 @@ build_ipxe() {
     if [ ! -d "ipxe_${IPXE_VERSION}" ]; then
         [ -f "${ipxe_tarball}" ] || log_error "Missing iPXE source archive: ${ipxe_tarball}"
         [ -f "${ipxe_sha256}" ] || log_error "Missing checksum file: ${ipxe_sha256}"
-        if sha256sum -c "${ipxe_sha256}" >> "${RUN_LOG_FILE}" 2>&1; then
+        if sha256sum -c --quiet "${ipxe_sha256}" >> "${RUN_LOG_FILE}" 2>&1; then
             log_pass "iPXE source checksum verified."
         else
             log_error "SHA256 checksum failed for ${ipxe_tarball}"
@@ -1067,7 +1067,7 @@ final_status() {
     cat << EOF | tee -a "${RUN_LOG_FILE}"
 
 ========================================================
-    ${PRODUCT_NAME} Setup Complete! 
+    ${PRODUCT_NAME} Complete
 ========================================================
     Version: ${VERSION}
     OS: ${DISTRO} (${KERNEL})
