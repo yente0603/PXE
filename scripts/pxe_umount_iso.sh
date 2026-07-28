@@ -26,7 +26,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 log() {
     local message="$1"
     local timestamp
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S %Z')
 
     echo -e "[${timestamp}] ${message}"
     echo -e "[${timestamp}] ${message}" | sed 's/\x1b\[[0-9;]*m//g' >> "${RUN_LOG_FILE}"
@@ -132,7 +132,7 @@ umount_iso() {
 
 
     if [[ ${count} -eq 0 ]]; then
-        log_warn "No mounted ISO found."
+        log_info "No mounted ISO found."
     fi
 }
 

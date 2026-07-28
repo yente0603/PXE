@@ -25,7 +25,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 log() {
     local message="$1"
     local timestamp
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S %Z')
     echo -e "[${timestamp}] ${message}"
     echo -e "[${timestamp}] ${message}" | sed 's/\x1b\[[0-9;]*m//g' >> "${RUN_LOG_FILE}"
 }
@@ -144,7 +144,7 @@ mount_iso() {
     done < <(find "${ISO_PATH}" -type f -iname "*.iso")
 
     if [[ ${count} -eq 0 ]]; then
-        log_warn "No ISO files found in ${ISO_PATH}"
+        log_info "No ISO files found in ${ISO_PATH}"
     fi
 }
 

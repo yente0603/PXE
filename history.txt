@@ -1,6 +1,6 @@
-Version: 3.0.0-rc3
+Version: 3.0.0
     Installer    : pxe_installer.sh
-    Release Date : TBD
+    Release Date : 2026/07/28
     Description  :
         a. Refactor installer configuration and workflow.
         b. Move the PXE installation layout from /pxe to /opt/pxe.

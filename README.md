@@ -1,7 +1,7 @@
 # PXE
 
-**Latest Version**: 3.0.0-rc4  
-**Release Date**: TBD  
+**Latest Version**: 3.0.0  
+**Release Date**: 2026/07/28  
 **Author**: Jasper Lee  
 
 This project provides a repeatable PXE server setup for Ubuntu Desktop. It configures bridge networking, DHCP, TFTP, Apache HTTP, and iPXE for IPv4 and IPv6 network boot.
@@ -19,7 +19,7 @@ This project provides a repeatable PXE server setup for Ubuntu Desktop. It confi
 
 ## Compatibility
 
-- Verified on Ubuntu Desktop 24.04
+- Supports Ubuntu Desktop 22.04 LTS and later supported releases
 - Requires NetworkManager
 - Uses Netplan with the NetworkManager renderer
 - Requires `sudo` because it modifies networking and system services
