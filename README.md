@@ -1,6 +1,6 @@
 # PXE
 
-**Latest Version**: 3.0.0-rc3  
+**Latest Version**: 3.0.0-rc4  
 **Release Date**: TBD  
 **Author**: Jasper Lee  
 

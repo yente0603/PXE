@@ -54,7 +54,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 log() {
     local message="$1"
     local timestamp 
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S %Z')
     echo -e "[${timestamp}] ${message}"
     echo -e "[${timestamp}] ${message}" | sed 's/\x1b\[[0-9;]*m//g' >> "${RUN_LOG_FILE}"
 }
@@ -223,7 +223,7 @@ show_welcome_info() {
     PXE BRIDGE: ${PXE_BRIDGE}
     PXE SERVER [IPv4]: ${PXE_SERVER_IPv4}
     PXE SERVER [IPv6]: ${PXE_SERVER_IPv6}
-    Date/Time: $(LC_ALL=C date '+%Y-%m-%d %H:%M:%S $Z')
+    Date/Time: $(LC_ALL=C date '+%Y-%m-%d %H:%M:%S %Z')
 ========================================================
 EOF
 }
@@ -1049,7 +1049,9 @@ mount_iso() {
 }
 
 umount_iso() {
-    section "Unmount Existing ISO Files"
+    if [[ "${ACTION}" != "uninstall" ]]; then
+        section "Unmount Existing ISO Files"
+    fi
     
     if [[ ! -x "${BIN_PATH}/pxe_umount_iso.sh" ]]; then
         log_warn "Umount script not found, skipping..."
