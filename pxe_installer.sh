@@ -722,8 +722,8 @@ setup_pxe_files() {
     log_pass "iPXE related files copy completed."
     
     # EFI shell files
-    if [[ -f "${SCRIPT_DIR}/assets/efi/BOOT/shellx64.efi" ]]; then
-        cp -r "${SCRIPT_DIR}/assets/efi/BOOT/" "${TFTP_PATH}/efi/" 2>&1 | tee -a "${RUN_LOG_FILE}"
+    if [[ -f "${SCRIPT_DIR}/assets/efi/boot/shellx64.efi" ]]; then
+        cp -r "${SCRIPT_DIR}/assets/efi/boot/" "${TFTP_PATH}/efi/" 2>&1 | tee -a "${RUN_LOG_FILE}"
         log_pass "EFI Shell setup completed."
     else
         log_warn "EFI shell files not found! EFI shell Will not be installed in PXE system."
@@ -744,12 +744,12 @@ setup_pxe_files() {
     fi
     
     # Ghost files for WinPE
-    if [[ -f "${SCRIPT_DIR}/assets/ghost/Ghost/12.0.0.10618/ghost64.dmp" ]]; then
+    if [[ -f "${SCRIPT_DIR}/assets/ghost/ghost/12.0.0.10618/ghost64.dmp" ]]; then
         cp -r "${SCRIPT_DIR}"/assets/ghost/* "${HTTP_PATH}/" 2>&1 | tee -a "${RUN_LOG_FILE}"
-        log_pass "Ghost in WinPE env setup completed. You can execute Ghost.bat to launch Ghost in WinPE."
+        log_pass "Ghost in WinPE env setup completed. You can execute ghost.bat to launch Ghost in WinPE."
     else
         log_warn "Ghost files not found! Ghost will not be installed in PXE system."
-        log_warn "Manually install: sudo cp /path/to/you/Ghost/ ${HTTP_PATH}/Ghost"
+        log_warn "Manually install: sudo cp /path/to/you/ghost/ ${HTTP_PATH}/ghost"
     fi
 
     chown tftp:tftp "${TFTP_PATH}"
@@ -823,7 +823,7 @@ boot
 echo Loading WinPE...
 kernel tftp://\${pxeip}/winpe/wimboot
 initrd http://\${pxeip}/winpe/bootmgr            bootmgr
-initrd http://\${pxeip}/winpe/boot/bcd           boot/BCD
+initrd http://\${pxeip}/winpe/boot/bcd           boot/bcd
 initrd http://\${pxeip}/winpe/boot/boot.sdi      boot/boot.sdi
 initrd http://\${pxeip}/winpe/sources/boot.wim   boot/boot.wim
 initrd http://\${pxeip}/winpe/winpeshl.ini       winpeshl.ini

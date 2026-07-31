@@ -1,7 +1,7 @@
 # PXE
 
-**Latest Version**: 3.0.1  
-**Release Date**: 2026/07/28  
+**Latest Version**: 3.0.2  
+**Release Date**: 2026/07/30  
 **Author**: Jasper Lee  
 
 This project provides a repeatable PXE server setup for Ubuntu Desktop. It configures bridge networking, DHCP, TFTP, Apache HTTP, and iPXE for IPv4 and IPv6 network boot.
@@ -100,7 +100,7 @@ Some boot assets are not stored in GitHub because of licensing or **NDA restrict
 
 Missing optional assets are reported during installation and must be supplied manually if required.
 
-The patch under `patch/v2.2_jetson_air021a1` is intended for PXE installer v2.2 and is not compatible with the v3.0.0 `/opt/pxe` layout without modification.
+The patch under `patch/v2.2_jetson_air021a1` is intended for PXE installer v2.2 and is not compatible with the v3.0.2 `/opt/pxe` layout without modification.
 
 For the complete installation package, such as `pxe_installer_<VERSION>.tgz` or `pxe_installer_<VERSION>.run`, contact the author.
 

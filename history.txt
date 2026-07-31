@@ -1,3 +1,9 @@
+Version: 3.0.2
+    Installer    : pxe_installer.sh
+    Release Date : 2026/07/30
+    Description  :
+        a. fix correct path in installer script
+
 Version: 3.0.1
     Installer    : pxe_installer.sh
     Release Date : 2026/07/28
